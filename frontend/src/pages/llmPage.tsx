@@ -8,6 +8,7 @@ import { LLMMonitor } from "@/components/llm-monitor"
 import SettingSwitch from "@/components/setting-switch"
 import { useSettings } from "@/context/SettingsContext"
 import { useEffect, useState } from "react"
+import { Badge } from "@/components/ui/badge"
 
 export type SessionInfo = {
     title: string,
@@ -17,6 +18,8 @@ export type SessionInfo = {
 function LLMPage() {
     const { settings } = useSettings();
     const [showMonitor, setShowMonitor] = useState(settings["llm.showMonitor"]);
+    const provider = settings["llm.provider"] ?? "ollama_cloud";
+    const isOllamaCloud = provider === "ollama_cloud";
     useEffect(() => {
         setShowMonitor(settings["llm.showMonitor"]);
     }, [settings["llm.showMonitor"]]);
@@ -40,6 +43,12 @@ function LLMPage() {
             )}
             <SidePanel isOpen={false} width={500} toggleText={{open: "Settings", close: "Settings"}} >
                 <div className="space-y-2 w-full flex flex-col items-start gap-4">
+                    <div className="flex items-center gap-2">
+                        <label className="text-sm font-medium">Provider</label>
+                        <Badge variant={isOllamaCloud ? "default" : "secondary"}>
+                            {isOllamaCloud ? "Ollama Cloud" : "Local GGUF"}
+                        </Badge>
+                    </div>
                     <div className="flex flex-col items-start gap-2">
                         <label className="text-sm font-medium">AI Model Selector</label>
                         <AIModelSelector />

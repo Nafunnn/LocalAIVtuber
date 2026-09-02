@@ -113,6 +113,26 @@ class PipelineManager {
     this.notify();
   }
 
+  markTTSFailed(taskId: string, responseIndex: number) {
+    const task = this.getTaskById(taskId);
+    const response = task?.response?.[responseIndex];
+    if (!task || !response) return;
+    response.tts_failed = true;
+    response.playback_finished = true;
+    this.updateTaskStatus(task);
+    this.notify();
+  }
+
+  private getActiveTasks() {
+    return this.tasks.filter(
+      task => task.status !== "task_finished" && task.status !== "cancelled"
+    );
+  }
+
+  private getSpeakableResponses(task: Task) {
+    return task.response.filter(res => res.text?.trim());
+  }
+
   getNextTaskForLLM() {
     const task = this.getCurrentTask()
     if (task && task.status !== "pending_interruption") {
@@ -124,11 +144,11 @@ class PipelineManager {
   }
 
   getNextTaskForTTS() {
-    const task = this.getCurrentTask()
-    if (task && task.status !== "pending_interruption") {
+    for (const task of this.getActiveTasks()) {
+      if (task.status === "pending_interruption") continue;
       for (let j = 0; j < task.response.length; j++) {
         const res = task.response[j];
-        if (res.text && !res.audio) {
+        if (res.text?.trim() && !res.audio && !res.tts_failed) {
           return {
             taskId: task.id,
             responseIndex: j,
@@ -141,11 +161,11 @@ class PipelineManager {
   }
 
   getNextTaskForAudio() {
-    const task = this.getCurrentTask()
-    if (task && task.status !== "pending_interruption") {
+    for (const task of this.getActiveTasks()) {
+      if (task.status === "pending_interruption") continue;
       for (let j = 0; j < task.response.length; j++) {
         const res = task.response[j];
-        if (res.text && res.audio && !res.playback_finished) {
+        if (res.text?.trim() && res.audio && !res.playback_finished && !res.tts_failed) {
           return {
             taskId: task.id,
             responseIndex: j,
@@ -172,12 +192,9 @@ class PipelineManager {
 
     const llmFinish = task.status == "llm_finished";
     const ttsFinish = task.status == "tts_finished";
-    const allAudio = task.response.every(r => r.audio);
-    const allPlayback = task.response.every(r => r.playback_finished);
-    // console.log("llmFinish " + llmFinish)
-    // console.log("ttsFinish " + ttsFinish)
-    // console.log("allAudio " + allAudio)
-    // console.log("allPlayback " + allPlayback)
+    const speakable = this.getSpeakableResponses(task);
+    const allAudio = speakable.length === 0 || speakable.every(r => r.audio || r.tts_failed);
+    const allPlayback = speakable.length === 0 || speakable.every(r => r.playback_finished || r.tts_failed);
     if (llmFinish && allAudio) {
       task.status = "tts_finished";
     }

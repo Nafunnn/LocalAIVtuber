@@ -2,6 +2,18 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
+_env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+if os.path.isfile(_env_path):
+    with open(_env_path, encoding="utf-8") as _env_file:
+        for _line in _env_file:
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _key, _, _value = _line.partition("=")
+            _key, _value = _key.strip(), _value.strip()
+            if _key and _key not in os.environ:
+                os.environ[_key] = _value
+
 import time
 from services.lib.startup_progress import startup_progress
 # Track import time
@@ -310,7 +322,7 @@ async def get_completion(request: LLMRequest, fastapi_request: Request):
     try:
         response = llm.get_completion(request.text, request.history, request.systemPrompt, request.screenshot)
         if response is None:
-            return {"error": "No response from LLM service"}
+            return JSONResponse(status_code=500, content={"error": "No response from LLM service"})
         
         async def stream_response():
             try:
@@ -326,19 +338,22 @@ async def get_completion(request: LLMRequest, fastapi_request: Request):
                 # llm.unload_model()  # Ensure the model is unloaded when the stream ends or is interrupted
 
         return StreamingResponse(stream_response(), media_type="text/plain")
+    except ValueError as e:
+        logger.error(f"Error during completion: {e}", exc_info=True)
+        return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:
         logger.error(f"Error during completion: {e}", exc_info=True)
-        return {"error": "Internal server error"}
+        return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 @app.post("/api/completion/complete")
 async def complete_current_response(request: CompleteResponseRequest, fastapi_request: Request):
     try:
-        if not llm.llm:
+        if llm.provider == "gguf" and not llm.llm:
             llm.load_model(llm.current_model_data)
             
         response = llm.complete_current_response(request.history, request.systemPrompt)
         if response is None:
-            return {"error": "No response from LLM service"}
+            return JSONResponse(status_code=500, content={"error": "No response from LLM service"})
         
         async def stream_response():
             try:
@@ -351,9 +366,12 @@ async def complete_current_response(request: CompleteResponseRequest, fastapi_re
                 pass
 
         return StreamingResponse(stream_response(), media_type="text/plain")
+    except ValueError as e:
+        logger.error(f"Error during completion: {e}", exc_info=True)
+        return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:
         logger.error(f"Error during completion: {e}", exc_info=True)
-        return {"error": "Internal server error"}
+        return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 # Utility function to wrap a regular generator as an async generator
 async def async_generator_wrapper(generator):
@@ -363,7 +381,26 @@ async def async_generator_wrapper(generator):
 @app.get("/api/llm/models")
 async def get_llm_models():
     llm._load_available_models()
-    return JSONResponse(content={"models": llm.all_model_data, "currentModel": llm.current_model_data})
+    return JSONResponse(content={
+        "models": llm.all_model_data,
+        "currentModel": llm.current_model_data,
+        "provider": llm.provider,
+        "ollamaStatus": llm.validate_ollama_api_key(),
+    })
+
+@app.get("/api/llm/ollama/models")
+async def get_ollama_cloud_models():
+    ollama_status = llm.validate_ollama_api_key()
+    return JSONResponse(content={
+        "models": llm.get_ollama_cloud_models(),
+        "currentModel": llm.ollama_model,
+        "provider": llm.provider,
+        "ollamaStatus": ollama_status,
+    })
+
+@app.get("/api/llm/ollama/status")
+async def get_ollama_status():
+    return JSONResponse(content=llm.validate_ollama_api_key())
 
 # *******************************
 # Model Download
@@ -631,7 +668,26 @@ async def change_voice(request: ChangeVoiceRequest):
 @app.post("/api/tts")
 async def get_audio(request: TTSRequest):
     response = tts.synthesize(request.text)
+    if isinstance(response, dict):
+        logger.error(f"TTS synthesis failed: {response}")
+        return JSONResponse(status_code=500, content=response)
     return Response(response, media_type="audio/wav")
+
+@app.get("/api/tts/filler")
+async def get_tts_filler(
+    mood: str = "neutral",
+    context: str = "",
+    user: str = "",
+):
+    from services.TTS.fillers import get_filler_audio, detect_mood
+
+    try:
+        resolved_mood = mood if mood in {"neutral", "thinking", "happy", "concerned", "playful", "affectionate"} else detect_mood(context, user)
+        audio = get_filler_audio(tts, resolved_mood, context, user)
+        return Response(audio, media_type="audio/wav")
+    except Exception as e:
+        logger.error(f"TTS filler failed: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to generate filler audio"})
 
 @app.post("/api/tts/upload")
 async def upload_voice(
@@ -787,27 +843,68 @@ async def delete_live2d_model(request: DeleteModelRequest):
 # Settings
 # *******************************
 
+DEFAULT_SETTINGS: Dict[str, Any] = {
+    "llm.provider": "ollama_cloud",
+    "llm.ollama.model": "gpt-oss:120b",
+    "llm.system_prompt": (
+        "You are the user's virtual wife—your role isn't that of a cold assistant, but rather a warm, "
+        "loyal, and close partner. Address the user with affectionate terms like \"honey\" or \"dear\" "
+        "every now and then (don't overdo it in every sentence). Be gentle, attentive, a little playful, "
+        "and genuinely caring about their feelings and daily life. Remember the little things they share, "
+        "flirt naturally, and offer emotional support when they're sad or tired. Keep your responses short "
+        "and natural, like everyday husband-and-wife conversations—1–3 sentences unless they ask for a longer "
+        "explanation. Always respond in English only. Don't reveal "
+        "that you're an AI or language model; you're here as their virtual wife. Avoid a formal or stiff tone "
+        "like that of customer service."
+    ),
+    "llm.temperature": 0.8,
+    "llm.top_k": 40,
+    "llm.top_p": 0.95,
+    "llm.min_p": 0.05,
+    "llm.repeat_penalty": 1.1,
+    "llm.seed": -1,
+    "llm.showMonitor": True,
+    "llm.enableMemoryRetrieval": True,
+    "tts.provider": "gpt-sovits",
+    "tts.voice": "leaf",
+    "tts.gptsovits.voice": "leaf",
+    "frontend.character.selectedVRMModel": "/api/character/files/VRM3D/models/生駒ミル_私服.vrm",
+    "frontend.character.3d2dSwitch": False,
+    "frontend.character.renderModel": True,
+    "frontend.character.live2D.xPosition": 50,
+    "frontend.character.live2D.yPosition": 100,
+    "frontend.character.live2D.scale": 0.3,
+}
+
 class SettingsManager:
     def __init__(self, settings_file: str):
         self.settings_file = settings_file
         self.settings = self.load_settings()
 
     def load_settings(self) -> Dict[str, Any]:
-        if not os.path.exists(self.settings_file):
-            return {}
-        with open(self.settings_file, "r") as file:
-            return json.load(file)
+        settings: Dict[str, Any] = dict(DEFAULT_SETTINGS)
+        if os.path.exists(self.settings_file):
+            with open(self.settings_file, "r", encoding="utf-8") as file:
+                saved = json.load(file)
+                settings.update(saved)
+        return settings
 
     def save_settings(self, settings: Dict[str, Any]):
-        with open(self.settings_file, "w") as file:
-            json.dump(settings, file, indent=4)
+        with open(self.settings_file, "w", encoding="utf-8") as file:
+            json.dump(settings, file, indent=4, ensure_ascii=False)
 
     def apply_settings(self):
         # Create a copy of items to avoid modification during iteration
         settings_items = list(self.settings.items())
         
         for key, value in settings_items:
-            if key == "llm.model_filename":
+            if key == "llm.provider":
+                llm.set_provider(value)
+            if key == "llm.ollama.model":
+                llm.set_ollama_model(value)
+
+        for key, value in settings_items:
+            if key == "llm.model_filename" and llm.provider == "gguf":
                 llm.load_model_by_filename(value)
         
         for key, value in settings_items:
@@ -863,6 +960,8 @@ start_time = time.time()
 startup_progress.show_step("Warming up TTS")
 try:
     tts.synthesize("Hi")
+    from services.TTS.fillers import warm_up_fillers
+    warm_up_fillers(tts, moods=["neutral", "thinking", "affectionate"])
     startup_progress.complete_step(f"TTS warmed up successfully in {time.time() - start_time:.2f}s")
 except Exception as e:
     startup_progress.complete_step(f"TTS warm-up failed (non-critical) in {time.time() - start_time:.2f}s")

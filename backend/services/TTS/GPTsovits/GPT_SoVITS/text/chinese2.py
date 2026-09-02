@@ -18,9 +18,14 @@ pinyin_to_symbol_map = {
     for line in open(os.path.join(current_file_path, "opencpop-strict.txt")).readlines()
 }
 
-import jieba_fast, logging
-jieba_fast.setLogLevel(logging.CRITICAL)
-import jieba_fast.posseg as psg
+import logging
+try:
+    import jieba_fast as jieba_mod
+    import jieba_fast.posseg as psg
+except ImportError:
+    import jieba as jieba_mod
+    import jieba.posseg as psg
+jieba_mod.setLogLevel(logging.CRITICAL)
 
 # is_g2pw_str = os.environ.get("is_g2pw", "True")##默认开启
 # is_g2pw = False#True if is_g2pw_str.lower() == 'true' else False

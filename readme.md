@@ -49,7 +49,7 @@ python -m venv venv
 ```
 pip install llama-cpp-python==0.2.90 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install fastapi uvicorn qdrant-client[fastembed] pyautogui  sounddevice silero-vad easyocr==1.7.2 mss numpy==1.23.4 pytchat soxr
+pip install fastapi uvicorn qdrant-client[fastembed] pyautogui  sounddevice silero-vad easyocr==1.7.2 mss numpy==1.23.4 pytchat soxr ollama
 pip install -r services\TTS\GPTsovits\requirements.txt
 ```
 
@@ -89,6 +89,51 @@ npm run build
 ```
 
 The project should be ready for development.
+
+## Ollama Cloud (optional)
+
+You can use **Ollama Cloud** as an alternative LLM provider instead of local GGUF models. This offloads LLM inference to Ollama's cloud service, freeing VRAM for TTS and other local services.
+
+### Setup
+
+1. Create an API key at [ollama.com/settings/keys](https://ollama.com/settings/keys)
+2. Set the `OLLAMA_API_KEY` environment variable before starting the server:
+
+**Windows (Command Prompt):**
+```
+set OLLAMA_API_KEY=your_api_key_here
+```
+
+**Windows (PowerShell):**
+```
+$env:OLLAMA_API_KEY="your_api_key_here"
+```
+
+Or set it permanently via System Environment Variables.
+
+3. In the web UI, go to **Settings** → set **LLM Provider** to **Ollama Cloud**
+4. On the **Home** page, open the model selector and choose a cloud model
+
+### Curated cloud models
+
+| Model | Role | Best for |
+|-------|------|----------|
+| `deepseek-v4-flash` | Default | Low-latency real-time VTuber responses |
+| `kimi-k2.6` | Conversational | Character personality and lively chat |
+| `qwen3.5` | Balanced | Reliable general-purpose dialogue |
+| `gpt-oss:120b` | Premium | Highest quality when latency is less critical |
+
+### Provider comparison
+
+| | Local GGUF | Ollama Cloud |
+|---|-----------|--------------|
+| VRAM usage | High (LLM loaded locally) | None for LLM |
+| Latency | Lowest | Depends on network |
+| Model management | Download GGUF files | Select from curated list |
+| Internet required | No (for LLM) | Yes |
+| API key | Not needed | `OLLAMA_API_KEY` required |
+
+TTS, vision (screen capture), memory, and voice input continue to run locally regardless of LLM provider.
 
 ## FAQ
 ### nltk error

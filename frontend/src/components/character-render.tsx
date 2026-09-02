@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label"
 import { fetchLive2DModels, fetchVRMModels, CharacterModel } from "@/lib/characterModels"
 import ModelUploadManager from "@/components/model-upload-manager"
 
+const DEFAULT_VRM_KEY = "生駒ミル"
+
 export function CharacterRender() {
     const rendererSwitchId = "frontend.character.3d2dSwitch"
     const toggleRenderId = "frontend.character.renderModel"
@@ -59,7 +61,19 @@ export function CharacterRender() {
                 await updateSetting(selectedLive2DModelId, live2DModels[0].path)
             }
             if (!settings[selectedVRMModelId] && vrmModels.length > 0) {
-                await updateSetting(selectedVRMModelId, vrmModels[0].path)
+                const preferred = vrmModels.find(
+                    (model) =>
+                        model.path.includes(DEFAULT_VRM_KEY) ||
+                        model.displayName?.includes(DEFAULT_VRM_KEY)
+                )
+                await updateSetting(selectedVRMModelId, preferred?.path ?? vrmModels[0].path)
+            }
+
+            if (settings[rendererSwitchId] === undefined) {
+                await updateSetting(rendererSwitchId, false)
+            }
+            if (settings[toggleRenderId] === undefined) {
+                await updateSetting(toggleRenderId, true)
             }
 
             // Set default Live2D position and scale if not set
@@ -75,7 +89,7 @@ export function CharacterRender() {
         }
 
         setDefaultModels()
-    }, [settings, updateSetting, selectedLive2DModelId, selectedVRMModelId, live2DXPositionId, live2DYPositionId, live2DScaleId, modelsLoading, live2DModels, vrmModels])
+    }, [settings, updateSetting, selectedLive2DModelId, selectedVRMModelId, live2DXPositionId, live2DYPositionId, live2DScaleId, modelsLoading, live2DModels, vrmModels, rendererSwitchId, toggleRenderId])
 
     const handleLive2DModelChange = async (modelPath: string) => {
         await updateSetting(selectedLive2DModelId, modelPath)

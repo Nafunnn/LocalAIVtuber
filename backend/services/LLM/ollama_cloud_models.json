@@ -1,0 +1,30 @@
+[
+    {
+        "modelId": "deepseek-v4-flash",
+        "displayName": "DeepSeek V4 Flash",
+        "description": "Low-latency model optimized for real-time VTuber responses.",
+        "role": "default",
+        "type": "text"
+    },
+    {
+        "modelId": "kimi-k2.6",
+        "displayName": "Kimi K2.6",
+        "description": "Conversational model with strong personality for character-driven chat.",
+        "role": "conversational",
+        "type": "text"
+    },
+    {
+        "modelId": "qwen3.5",
+        "displayName": "Qwen 3.5",
+        "description": "Balanced general-purpose model for reliable multi-turn dialogue.",
+        "role": "balanced",
+        "type": "text"
+    },
+    {
+        "modelId": "gpt-oss:120b",
+        "displayName": "GPT-OSS 120B",
+        "description": "High-quality premium model when latency is less critical.",
+        "role": "premium",
+        "type": "text"
+    }
+]

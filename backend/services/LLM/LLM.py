@@ -4,8 +4,7 @@ import shutil
 from services.lib.LAV_logger import logger
 
 from .BaseLLM import BaseLLM
-from .TextLLM import TextLLM
-from .VisionLLM import VisionLLM
+from .OllamaCloudLLM import OllamaCloudLLM
 
 
 class LLM:
@@ -16,6 +15,11 @@ class LLM:
         self.llm: BaseLLM | None = None
         self.all_model_data = None
         self.keep_model_loaded = False
+
+        self.provider = "ollama_cloud"
+        self.ollama_model = "gpt-oss:120b"
+        self.ollama_base_url = "https://ollama.com"
+        self.ollama_llm: OllamaCloudLLM | None = None
         
         # Default sampling parameters
         self.sampling_params = {
@@ -34,7 +38,7 @@ class LLM:
         # Load available models
         self._load_available_models()
         
-        if self.keep_model_loaded and self.current_model_data:
+        if self.provider == "gguf" and self.keep_model_loaded and self.current_model_data:
             self.load_model(self.current_model_data, gpu_layers)
 
     def _load_available_models(self):
@@ -156,8 +160,89 @@ class LLM:
         # Remove old model_data.json
         os.remove(old_model_data_path)
 
+    def set_provider(self, provider: str):
+        if provider not in ("gguf", "ollama_cloud"):
+            logger.warning(f"Unknown provider '{provider}', defaulting to 'ollama_cloud'")
+            provider = "ollama_cloud"
+        if self.provider == provider:
+            return
+        self.provider = provider
+        if provider == "ollama_cloud":
+            self.unload_model()
+            self._ensure_ollama_client()
+            logger.info(f"LLM provider set to ollama_cloud (model: {self.ollama_model})")
+        else:
+            self.ollama_llm = None
+            logger.info("LLM provider set to gguf")
+
+    def set_ollama_model(self, model: str):
+        self.ollama_model = model
+        if self.provider == "ollama_cloud":
+            self._ensure_ollama_client()
+
+    def _ensure_ollama_client(self):
+        self.ollama_llm = OllamaCloudLLM(
+            model=self.ollama_model,
+            base_url=self.ollama_base_url,
+        )
+
+    def get_ollama_cloud_models(self) -> list:
+        models_path = os.path.join(self.current_module_directory, "ollama_cloud_models.json")
+        try:
+            with open(models_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not load Ollama cloud models: {e}")
+            return []
+
+    def validate_ollama_api_key(self) -> dict:
+        api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
+        if not api_key:
+            return {
+                "api_key_set": False,
+                "connected": False,
+                "error": "OLLAMA_API_KEY environment variable is not set",
+            }
+        try:
+            import httpx
+            response = httpx.get(
+                f"{self.ollama_base_url}/api/tags",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10.0,
+            )
+            if response.status_code == 401:
+                return {
+                    "api_key_set": True,
+                    "connected": False,
+                    "error": "Invalid or missing Ollama API key",
+                }
+            response.raise_for_status()
+            return {
+                "api_key_set": True,
+                "connected": True,
+                "error": None,
+            }
+        except Exception as e:
+            return {
+                "api_key_set": True,
+                "connected": False,
+                "error": f"Failed to connect to Ollama Cloud: {e}",
+            }
+
+    def _get_sampling_kwargs(self) -> dict:
+        return {
+            "top_k": self.sampling_params["top_k"],
+            "top_p": self.sampling_params["top_p"],
+            "min_p": self.sampling_params["min_p"],
+            "repeat_penalty": self.sampling_params["repeat_penalty"],
+            "temperature": self.sampling_params["temperature"],
+            "seed": self.sampling_params["seed"],
+        }
+
     def load_model_by_filename(self, model_filename: str, gpu_layers=-1):
         """Load a model by its filename"""
+        if self.provider == "ollama_cloud":
+            return True
         self._load_available_models()
         for model_data in self.all_model_data:
             if model_data.get("fileName") == model_filename:
@@ -168,6 +253,10 @@ class LLM:
         
     def load_model(self, model_data: dict, gpu_layers=-1):
         """Load a model using its metadata"""
+        if self.provider == "ollama_cloud":
+            return
+        from .TextLLM import TextLLM
+        from .VisionLLM import VisionLLM
         logger.debug(f"Loading model {model_data}...")
         if (self.llm and self.current_model_data.get('fileName') == model_data.get('fileName')):
             logger.debug(f"Same model already loaded, load cancelled...")
@@ -207,12 +296,17 @@ class LLM:
             logger.info(f"Model changed to {model_name}.")
 
     def unload_model(self):
+        if self.provider == "ollama_cloud":
+            return
         if self.llm:
             del self.llm
             self.llm = None
             logger.info("Model unloaded.")
 
     def set_keep_model_loaded(self, value):
+        if self.provider == "ollama_cloud":
+            self.keep_model_loaded = value
+            return
         self.keep_model_loaded = value
         if value == True:
             self.load_model(self.current_model_data)
@@ -225,25 +319,31 @@ class LLM:
         logger.info(f"Updated sampling parameters: {self.sampling_params}")
 
     def get_completion(self, text, history, system_prompt, screenshot=False):
+        if self.provider == "ollama_cloud":
+            if not self.ollama_llm:
+                self._ensure_ollama_client()
+            return self.ollama_llm.get_chat_completion(
+                text,
+                history,
+                system_prompt,
+                **self._get_sampling_kwargs(),
+            )
+
         if not self.llm:
             self.load_model(self.current_model_data)
 
+        from .TextLLM import TextLLM
+        from .VisionLLM import VisionLLM
+
         response = None
         if isinstance(self.llm, VisionLLM):
-            self.llm: VisionLLM
             response = self.llm.get_chat_completion(text, history, system_prompt, screenshot)
         elif isinstance(self.llm, TextLLM):
-            self.llm: TextLLM
             response = self.llm.get_chat_completion(
                 text, 
                 history, 
                 system_prompt,
-                top_k=self.sampling_params['top_k'],
-                top_p=self.sampling_params['top_p'],
-                min_p=self.sampling_params['min_p'],
-                repeat_penalty=self.sampling_params['repeat_penalty'],
-                temperature=self.sampling_params['temperature'],
-                seed=self.sampling_params['seed']
+                **self._get_sampling_kwargs(),
             )
         if not self.keep_model_loaded:
             self.unload_model()
@@ -251,21 +351,26 @@ class LLM:
 
     def complete_current_response(self, history, system_prompt):
         """Complete the current response with sampling parameters from settings"""
+        if self.provider == "ollama_cloud":
+            if not self.ollama_llm:
+                self._ensure_ollama_client()
+            return self.ollama_llm.complete_current_response(
+                history,
+                system_prompt,
+                **self._get_sampling_kwargs(),
+            )
+
         if not self.llm:
             self.load_model(self.current_model_data)
 
+        from .TextLLM import TextLLM
+
         response = None
         if isinstance(self.llm, TextLLM):
-            self.llm: TextLLM
             response = self.llm.complete_current_response(
                 history, 
                 system_prompt,
-                top_k=self.sampling_params['top_k'],
-                top_p=self.sampling_params['top_p'],
-                min_p=self.sampling_params['min_p'],
-                repeat_penalty=self.sampling_params['repeat_penalty'],
-                temperature=self.sampling_params['temperature'],
-                seed=self.sampling_params['seed']
+                **self._get_sampling_kwargs(),
             )
         
         if not self.keep_model_loaded:

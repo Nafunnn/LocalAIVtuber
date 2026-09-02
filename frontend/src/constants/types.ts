@@ -2,6 +2,7 @@ export type TaskResponse = {
   text: string;
   audio?: string;
   playback_finished?: boolean;
+  tts_failed?: boolean;
 };
 
 export type TaskStatus =
