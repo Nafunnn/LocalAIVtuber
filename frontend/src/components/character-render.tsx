@@ -12,7 +12,7 @@ import ModelUploadManager from "@/components/model-upload-manager"
 
 const DEFAULT_VRM_KEY = "生駒ミル"
 
-export function CharacterRender() {
+export function CharacterRender({ isActive = true }: { isActive?: boolean }) {
     const rendererSwitchId = "frontend.character.3d2dSwitch"
     const toggleRenderId = "frontend.character.renderModel"
     const selectedLive2DModelId = "frontend.character.selectedLive2DModel"
@@ -100,8 +100,8 @@ export function CharacterRender() {
     }
 
     return (
-        <div className="relative h-screen overflow-hidden">
-            <SidePanel width={400}>
+        <div className="relative h-full overflow-hidden">
+            <SidePanel width={400} isOpen={isActive}>
 
                 <div className="space-y-4">
 
@@ -224,7 +224,7 @@ export function CharacterRender() {
             </SidePanel>
 
             {settings[toggleRenderId] ? (
-                <div>
+                <div className="absolute inset-0 w-full h-full">
                     {settings[rendererSwitchId] ? (
                         settings[selectedLive2DModelId] ? (
                             <Live2DCanvas
@@ -241,7 +241,11 @@ export function CharacterRender() {
                             </div>
                         )
                     ) : (
-                        <VRM3dCanvas modelPath={settings[selectedVRMModelId]} key={settings[selectedVRMModelId]} />
+                        <VRM3dCanvas
+                            modelPath={settings[selectedVRMModelId]}
+                            isActive={isActive}
+                            key={settings[selectedVRMModelId]}
+                        />
                     )}
                 </div>
             ) : (

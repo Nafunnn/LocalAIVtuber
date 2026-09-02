@@ -10,15 +10,14 @@ export default function GptSovitsSettings() {
   const provider = ttsManager.getCurrentProviderInstance() as GPTSoVITSProvider;
 
   useEffect(() => {
-    // Initial state
     setVoices(provider.getVoices());
-    if (provider.getCurrentVoice() === null) {
-      provider.setVoice(voices[0]?.name || "");
-    }
 
-    // Subscribe to changes
     const unsubscribe = provider.subscribe(() => {
-      setVoices(provider.getVoices());
+      const loadedVoices = provider.getVoices();
+      setVoices(loadedVoices);
+      if (provider.getCurrentVoice() === null && loadedVoices[0]?.name) {
+        void provider.setVoice(loadedVoices[0].name);
+      }
     });
 
     return unsubscribe;

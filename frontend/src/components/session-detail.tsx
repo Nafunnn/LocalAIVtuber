@@ -139,7 +139,7 @@ export default function SessionDetail({ sessionId, onBack }: SessionDetailProps)
 
   if (!sessionData) {
     return (
-      <div className="min-h-screen p-6">
+      <div className="h-full overflow-y-auto p-6">
         <div className="max-w-4xl mx-auto text-center py-12">
           <h1 className="text-2xl font-bold mb-4">Session not found</h1>
           <Button onClick={onBack}>Back to Sessions</Button>
@@ -159,7 +159,7 @@ export default function SessionDetail({ sessionId, onBack }: SessionDetailProps)
   }
 
   return (
-    <div className="min-h-screen p-6">
+    <div className="h-full overflow-y-auto p-6">
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="mb-6">

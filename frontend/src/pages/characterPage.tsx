@@ -1,12 +1,13 @@
 import { CharacterRender } from "@/components/character-render"
 
+interface CharacterPageProps {
+    isActive: boolean
+}
 
-
-function CharacterPage() {
+function CharacterPage({ isActive }: CharacterPageProps) {
     return (
-        <div className="w-fill h-fill">
-
-            <CharacterRender/>
+        <div className="w-full h-full">
+            <CharacterRender isActive={isActive} />
         </div>
     )
 }

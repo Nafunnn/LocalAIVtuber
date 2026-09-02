@@ -5,7 +5,7 @@ function StreamPage() {
 
 
     return (
-        <div className="p-5 flex flex-col gap-4">
+        <div className="flex h-full flex-col gap-4 overflow-y-auto p-5">
             <Label className="text-sm text-muted-foreground">This is still an experiemental feature.</Label> 
             <Stream></Stream>
         </div>

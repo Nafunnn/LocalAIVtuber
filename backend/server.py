@@ -111,15 +111,35 @@ async def serve_webui():
 # Input
 # *******************************
 
+class RecordStartRequest(BaseModel):
+    batch_until_stop: bool = False
+
 @app.post("/api/record/start")
-async def start_recording():
-    asyncio.create_task(voice_input.start_streaming(clients))
+async def start_recording(request: RecordStartRequest = RecordStartRequest()):
+    asyncio.create_task(voice_input.start_streaming(clients, batch_until_stop=request.batch_until_stop))
     return Response(status_code=200)
 
 @app.post("/api/record/stop")
 async def stop_recording():
     voice_input.stop_streaming()
     return Response(status_code=200)
+
+@app.get("/api/input/microphones")
+async def list_microphones():
+    try:
+        return {"microphones": voice_input.list_microphones()}
+    except Exception as e:
+        logger.error(f"Failed to list microphones: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to list microphones"})
+
+class MicrophoneDeviceRequest(BaseModel):
+    index: int | None = None
+
+@app.post("/api/input/microphone")
+async def set_microphone_device(request: MicrophoneDeviceRequest):
+    voice_input.set_input_device(request.index)
+    settings_manager.update_settings({"input.microphone.device": request.index})
+    return {"success": True, "index": request.index}
 
 @app.websocket("/ws/audio")
 async def websocket_audio(websocket: WebSocket):
@@ -853,7 +873,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "and genuinely caring about their feelings and daily life. Remember the little things they share, "
         "flirt naturally, and offer emotional support when they're sad or tired. Keep your responses short "
         "and natural, like everyday husband-and-wife conversations—1–3 sentences unless they ask for a longer "
-        "explanation. Always respond in English only. Don't reveal "
+        "explanation. Always respond in English only, even if the user writes in another language. "
+        "Use Markdown when it improves readability (lists, emphasis, short headings). Don't reveal "
         "that you're an AI or language model; you're here as their virtual wife. Avoid a formal or stiff tone "
         "like that of customer service."
     ),
@@ -874,6 +895,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "frontend.character.live2D.xPosition": 50,
     "frontend.character.live2D.yPosition": 100,
     "frontend.character.live2D.scale": 0.3,
+    "input.microphone.device": None,
+    "input.language": "en",
+    "input.camera.deviceId": "",
 }
 
 class SettingsManager:
@@ -920,6 +944,10 @@ class SettingsManager:
                     logger.warning(f"Saved voice '{value}' not found, removing from settings")
                     self.settings.pop("tts.voice")
                     self.save_settings(self.settings)
+            if key == "input.microphone.device":
+                voice_input.set_input_device(value)
+            if key == "input.language":
+                voice_input.set_input_language(value)
         
         # Apply LLM sampling parameters
         llm_sampling_params = {}
@@ -1249,7 +1277,15 @@ app.middleware("http")(create_proxy_middleware("/api/rvc", rvc_server_port))
 
 if __name__ == "__main__":
     try:
-        uvicorn.run(app, host="localhost", port=8000)
+        try:
+            import websockets  # noqa: F401
+        except ImportError:
+            logger.error(
+                "WebSocket support missing. Voice input and push-to-talk require: "
+                "pip install 'uvicorn[standard]' websockets"
+            )
+            raise SystemExit(1)
+        uvicorn.run(app, host="localhost", port=8000, ws="websockets")
     finally:
         # Stop all managed processes on shutdown
         process_manager.stop_all_servers()

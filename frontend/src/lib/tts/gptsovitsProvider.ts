@@ -36,10 +36,26 @@ export class GPTSoVITSProvider extends BaseTTSProvider {
     }
 
     private async fetchVoices() {
-        const response = await fetch('/api/tts/voices');
-        const data = await response.json();
-        this.voices = data.voices.map((voice: string) => ({ name: voice }));
-        this.notifySubscribers();
+        try {
+            const response = await fetch('/api/tts/voices');
+            const data = await response.json();
+            if (!response.ok) {
+                this.voices = [];
+                return;
+            }
+            const rawVoices = Array.isArray(data.voices) ? data.voices : [];
+            this.voices = rawVoices.map((voice: string | TTSVoice) =>
+                typeof voice === "string" ? { name: voice } : voice
+            );
+            if (!this.currentVoice && this.voices[0]?.name) {
+                await this.setVoice(this.voices[0].name);
+            }
+            this.notifySubscribers();
+        } catch (error) {
+            console.error("Failed to fetch TTS voices:", error);
+            this.voices = [];
+            this.notifySubscribers();
+        }
     }
 
     getVoices(): TTSVoice[] {
@@ -51,6 +67,9 @@ export class GPTSoVITSProvider extends BaseTTSProvider {
     }
 
     async setVoice(voice: string): Promise<void> {
+        if (!voice) {
+            return;
+        }
         const response = await fetch('/api/tts/change-voice', {
             method: 'POST',
             headers: {

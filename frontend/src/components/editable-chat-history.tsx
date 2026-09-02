@@ -7,6 +7,7 @@ import { TooltipContent, TooltipTrigger } from "./ui/tooltip"
 import { Tooltip } from "./ui/tooltip"
 import { TooltipProvider } from "./ui/tooltip"
 import { toast } from "sonner"
+import ChatMarkdown from "./chat-markdown"
 
 interface EditableChatHistoryProps {
     messages: HistoryItem[]
@@ -108,7 +109,7 @@ export default function EditableChatHistory({ messages, sessionId, onUpdate, onC
                         {message.role === 'user' ? 'You' : 'AI'}
                     </div>
                     <div
-                        className={`break-words max-w-7/10 w-fit px-4 py-2 rounded-md text-sm font-medium shadow-xs bg-secondary text-secondary-foreground
+                        className={`break-words max-w-[85%] w-fit px-4 py-2.5 rounded-md text-sm shadow-xs bg-secondary text-secondary-foreground
                              ${message.role === 'user'
                                 ? 'self-end'
                                 : 'self-start'
@@ -133,10 +134,10 @@ export default function EditableChatHistory({ messages, sessionId, onUpdate, onC
                                 </div>
                             </div>
                         ) : (
-                            <div className={`whitespace-pre-wrap ${message.role === 'user'
-                                ? 'opacity-80'
-                                : 'opacity-100'
-                            }`}>{message.content}</div>
+                            <ChatMarkdown
+                                content={message.content}
+                                className={message.role === 'user' ? 'opacity-80' : 'opacity-100'}
+                            />
                         )}
                     </div>
                     {editingMessageIndex !== index && (

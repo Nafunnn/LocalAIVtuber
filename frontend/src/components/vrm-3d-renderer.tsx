@@ -14,13 +14,12 @@ const ANIMATIONS = {
     DEFAULT: { idle: "/api/character/files/VRM3D/animations/idle.vrma", gestures: [] },
 }
 
-const BACKGROUND_IMAGE = "/black.png" 
-
 interface VRM3dCanvasProps {
     modelPath?: string;
+    isActive?: boolean;
 }
 
-const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
+const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   const vrmRef = useRef<VRM | null>(null);
@@ -44,8 +43,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
   // scene objects
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const backgroundTextureRef = useRef<THREE.Texture | null>(null);
-
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
   // constants
   const companionModeCameraPositionRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 1.7, 2.2));
@@ -81,29 +79,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
     const scene = new THREE.Scene();
     const mountNode = mountRef.current; // Copy the ref value to a local variable
 
-    // load background image
-    const loader = new THREE.TextureLoader();
-    loader.load(BACKGROUND_IMAGE, function (texture) {
-      texture.minFilter = THREE.LinearFilter;
-      scene.background = texture;
-      backgroundTextureRef.current = texture;
-      updateBackground();
-    });
-
-    function updateBackground(): void {
-      if (!backgroundTextureRef.current?.image) return; // Add null check
-      // When factor larger than 1, that means texture 'wilder' than target。 
-      // we should scale texture height to target height and then 'map' the center  of texture to target， and vice versa.
-      const targetAspect = window.innerWidth / window.innerHeight;
-      const imageAspect = backgroundTextureRef.current?.image.width / backgroundTextureRef.current?.image.height;
-      const factor = imageAspect / targetAspect;
-      if (scene.background instanceof THREE.Texture) {
-        scene.background.offset.x = factor > 1 ? (1 - 1 / factor) / 2 : 0;
-        scene.background.repeat.x = factor > 1 ? 1 / factor : 1;
-        scene.background.offset.y = factor > 1 ? 0 : (1 - factor) / 2;
-        scene.background.repeat.y = factor > 1 ? 1 : factor;
-      }
-    }
+    scene.background = new THREE.Color(0x000000);
 
     const camera = new THREE.PerspectiveCamera(
       30,
@@ -116,6 +92,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
     let parameters = null;
     parameters = { antialias: true }
     const renderer = new THREE.WebGLRenderer(parameters);
+    rendererRef.current = renderer;
 
     renderer.autoClear = false;
     renderer.setSize(mountNode?.clientWidth || window.innerWidth, mountNode?.clientHeight || window.innerHeight);
@@ -212,11 +189,19 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
 
     };
     const handleResize = () => {
-      updateBackground();
-      camera.aspect = window.innerWidth / window.innerHeight;
+      if (!mountNode) return;
+      const width = mountNode.clientWidth || window.innerWidth;
+      const height = mountNode.clientHeight || window.innerHeight;
+      if (width === 0 || height === 0) return;
+
+      camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setSize(width, height);
     };
+
+    handleResize();
+    const resizeObserver = mountNode ? new ResizeObserver(handleResize) : null;
+    resizeObserver?.observe(mountNode!);
     window.addEventListener('resize', handleResize);
 
     // setup listener for click events
@@ -260,6 +245,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
     initVRMScene();
     return () => {
         // Cleanup renderer
+        rendererRef.current = null;
         renderer.dispose();
 
         // Cleanup AnimationMixer
@@ -281,13 +267,11 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
             }
         });
 
-        // Cleanup textures
-        backgroundTextureRef.current?.dispose();
-
         // Cleanup controls
         controls.dispose();
 
         // Remove event listeners
+        resizeObserver?.disconnect();
         window.removeEventListener('resize', handleResize);
         window.removeEventListener('click', onMouseClick);
 
@@ -300,6 +284,23 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!isActive || !mountRef.current) return;
+
+    const node = mountRef.current;
+    const width = node.clientWidth;
+    const height = node.clientHeight;
+    if (width === 0 || height === 0) return;
+
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+    if (!camera || !renderer) return;
+
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    renderer.setSize(width, height);
+  }, [isActive]);
 
   enum AnimationType {
     Idle, // idle animations are looped and resumes playing after a gesture animation is finished
@@ -376,7 +377,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath }) => {
 
   };
 
-  return <div ref={mountRef} />;
+  return <div id="character-canvas" ref={mountRef} className="w-full h-full" />;
 };
 
 export default VRM3dCanvas;

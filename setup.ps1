@@ -25,7 +25,7 @@ Write-Host "[2/5] Installing backend dependencies (this may take a while)..." -F
 Set-Location $Backend
 
 & $VenvPip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-& $VenvPip install fastapi uvicorn "qdrant-client[fastembed]==1.12.1" pyautogui sounddevice silero-vad easyocr==1.7.2 mss numpy==1.23.4 pytchat soxr ollama httpx aiofiles aiohttp jinja2
+& $VenvPip install fastapi "uvicorn[standard]" websockets wsproto "qdrant-client[fastembed]==1.12.1" pyautogui sounddevice silero-vad easyocr==1.7.2 mss numpy==1.23.4 pytchat soxr ollama httpx aiofiles aiohttp jinja2
 & $VenvPip install "setuptools<81" librosa==0.9.2 numba==0.56.4 soundfile ffmpeg-python "transformers==4.43.4" peft sentencepiece modelscope==1.10.0 faster-whisper cn2an pypinyin g2p_en jieba split-lang fast_langdetect rotary_embedding_torch x_transformers torchmetrics pydub pytorch-lightning funasr gradio onnxruntime-gpu
 
 # NLTK data for TTS text processing

@@ -3,6 +3,7 @@ import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar } from "@/components/app-sidebar"
 import pageMapping from "@/constants/page-mapping"
 import { SettingsProvider } from "@/context/SettingsContext"
+import { PushToTalkOverlay } from "@/components/push-to-talk-overlay"
 
 type PageKey = keyof typeof pageMapping
 
@@ -10,26 +11,25 @@ function Mainpage() {
     const [currentPage, setCurrentPage] = useState<PageKey>("llm")
 
     return (
-        <SidebarProvider open={false}>
+        <SidebarProvider open={false} className="h-svh max-h-svh overflow-hidden">
             <SettingsProvider>
                     <AppSidebar onItemClick={setCurrentPage} activePage={currentPage} />
-                    <div className="flex flex-col w-full h-screen">
-                        <main className="flex-1 relative">
+                    <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+                        <main className="relative min-h-0 flex-1 overflow-hidden">
                             {Object.entries(pageMapping).map(([key, { page: PageComponent }]) => {
                                 const isActive = currentPage === key;
                                 const unmount = key === "memory";
 
-                                // Special handling for character page - minimize instead of unmount
+                                // Keep inactive pages mounted but hidden; only memory remounts.
                                 if (!unmount) {
                                     return (
                                         <div
                                             key={key}
+                                            className="absolute inset-0 overflow-hidden"
                                             style={{
-                                                width: isActive ? "100%" : "1px",
-                                                height: isActive ? "100%" : "1px",
-                                                position: "absolute",
-                                                overflow: isActive ? "visible" : "hidden",
+                                                visibility: isActive ? "visible" : "hidden",
                                                 pointerEvents: isActive ? "auto" : "none",
+                                                zIndex: isActive ? 1 : 0,
                                             }}
                                         >
                                             <PageComponent isActive={isActive} />
@@ -37,14 +37,14 @@ function Mainpage() {
                                     );
                                 }
 
-                                // Normal handling for other pages - mount/unmount
                                 return isActive ? (
-                                    <div key={key} className="absolute w-full h-full">
+                                    <div key={key} className="absolute inset-0 overflow-auto">
                                         <PageComponent isActive={true} />
                                     </div>
                                 ) : null;
                             })}
                         </main>
+                        <PushToTalkOverlay />
                     </div>
             </SettingsProvider>
         </SidebarProvider>

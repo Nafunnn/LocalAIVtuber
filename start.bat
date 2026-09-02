@@ -35,5 +35,11 @@ echo Starting LocalAIVtuber server...
 echo Web UI: http://localhost:8000
 echo.
 
+"%PYTHON%" -c "import websockets" 2>nul
+if errorlevel 1 (
+    echo Installing WebSocket support for voice input...
+    "%PYTHON%" -m pip install "uvicorn[standard]" websockets wsproto
+)
+
 "%PYTHON%" server.py
 pause

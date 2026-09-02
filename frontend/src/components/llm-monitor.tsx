@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { chatManager } from '@/lib/chatManager';
 import { globalStateManager } from '@/lib/globalStateManager';
+import { voiceInputManager } from '@/lib/voiceInputManager';
 import { CardContent, CardHeader } from './ui/card';
 import { Textarea } from './ui/textarea';
 import { Button } from './ui/button';
@@ -66,7 +67,11 @@ export function LLMMonitor() {
   }, []);
 
   const toggleVoiceRecording = () => {
-    globalStateManager.updateState('isVoiceRecording', !isVoiceRecording);
+    if (isVoiceRecording) {
+      void voiceInputManager.stopRecording();
+    } else {
+      void voiceInputManager.startRecording();
+    }
   };
 
   const toggleAutoCapture = () => {

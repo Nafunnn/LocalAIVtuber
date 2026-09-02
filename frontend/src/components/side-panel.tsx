@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { ScrollArea } from "./ui/scroll-area";
 
 interface SidePanelProps {
@@ -25,6 +25,10 @@ export function SidePanel({
     toggleText
 }: SidePanelProps) {
     const [isSidePanelOpen, setIsSidePanelOpen] = useState(isOpen);
+
+    useEffect(() => {
+        setIsSidePanelOpen(isOpen);
+    }, [isOpen]);
 
     const toggleSidePanel = () => {
         setIsSidePanelOpen((prev) => (!prev));

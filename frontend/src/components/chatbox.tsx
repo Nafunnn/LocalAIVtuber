@@ -147,7 +147,7 @@ const Chatbox = () => {
     }, [isProcessing]);
 
     return (
-        <div className="flex flex-col max-w-3xl mx-auto h-[calc(100vh-50px-17px)]">
+        <div className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col overflow-hidden">
             <SidePanel side="left" isOpen={false}>
                 <div className="w-full mb-4">
                     <Button 
@@ -216,7 +216,7 @@ const Chatbox = () => {
                     </div>
                 ))}
             </SidePanel>
-            <div className="flex flex-col space-y-4 mb-4 flex-grow">
+            <div className="mb-4 min-h-0 flex-1 space-y-4 overflow-y-auto">
                 <EditableChatHistory
                     messages={displayedMessages}
                     sessionId={chatManager.getSessionId() ?? ""}
@@ -232,8 +232,8 @@ const Chatbox = () => {
                 />
                 <div ref={messagesEndRef}></div>
             </div>
-            <div className="sticky bottom-0 bg-background rounded-t-lg">
-                <div className='mb-4 flex w-full items-center space-x-2 bg-secondary rounded-lg px-4 py-6'>
+            <div className="shrink-0 rounded-t-lg bg-background pb-2">
+                <div className='mb-2 flex w-full items-center space-x-2 rounded-lg bg-secondary px-4 py-4'>
                     <Input
                         ref={inputRef}
                         disabled={isProcessing}

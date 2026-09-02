@@ -23,7 +23,7 @@ export function ChatSidebar({ onItemClick, onChangeTitle,onDeleteSession, sessio
   }
 
   return (
-    <div className='relative flex flex-col bg-background p-2 max-w-3xl mx-auto h-[calc(100vh-50px-17px)]'>
+    <div className='relative mx-auto flex h-full min-h-0 max-w-3xl flex-col overflow-hidden bg-background p-2'>
       {sessions.length == 0 ? <div className='text-center text-sm text-muted-foreground'>Memory Empty</div> : <></>}
       {sessions.map((session) => (
         <div key={session.id}

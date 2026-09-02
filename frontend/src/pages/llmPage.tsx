@@ -25,21 +25,21 @@ function LLMPage() {
     }, [settings["llm.showMonitor"]]);
 
     return (
-        <div className="relative h-screen w-full overflow-hidden">
+        <div className="relative h-full w-full overflow-hidden">
             
             {showMonitor ? (
-                <div className="flex flex-row h-full justify-between">
-                    <ScrollArea className="border-t-1 border-l-1 h-full overflow-auto pl-20 pr-20 pt-4 w-6/12 ">
+                <div className="flex h-full min-h-0 flex-row justify-between">
+                    <div className="border-t-1 border-l-1 flex h-full min-h-0 w-6/12 flex-col overflow-hidden pl-20 pr-20 pt-4">
                         <Chatbox/>
-                    </ScrollArea>
-                    <ScrollArea className="w-5/12 pr-20 pt-4">
+                    </div>
+                    <ScrollArea className="h-full w-5/12 overflow-auto pr-20 pt-4">
                         <LLMMonitor />
                     </ScrollArea>
                 </div>
             ): (
-                <ScrollArea className="border-t-1 border-l-1 h-full overflow-auto pl-20 pt-4 w-full">
+                <div className="border-t-1 border-l-1 flex h-full min-h-0 w-full flex-col overflow-hidden pl-20 pt-4">
                     <Chatbox/>
-                </ScrollArea>
+                </div>
             )}
             <SidePanel isOpen={false} width={500} toggleText={{open: "Settings", close: "Settings"}} >
                 <div className="space-y-2 w-full flex flex-col items-start gap-4">

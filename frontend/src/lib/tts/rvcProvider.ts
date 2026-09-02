@@ -43,17 +43,39 @@ export class RVCProvider extends BaseTTSProvider {
     }
 
     private async fetchVoices() {
-        const response = await fetch('/api/rvc/models');
-        const data = await response.json();
-        this.voices = data.models.map((model: RVCModel) => model.name);
-        this.notifySubscribers();
+        try {
+            const response = await fetch('/api/rvc/models');
+            const data = await response.json();
+            if (!response.ok) {
+                this.voices = [];
+                this.notifySubscribers();
+                return;
+            }
+            this.voices = (data.models ?? []).map((model: RVCModel) => model.name);
+            this.notifySubscribers();
+        } catch (error) {
+            console.error("Failed to fetch RVC models:", error);
+            this.voices = [];
+            this.notifySubscribers();
+        }
     }
 
     private async fetchEdgeVoices() {
-        const response = await fetch('/api/rvc/edge-models');
-        const data = await response.json();
-        this.edgeVoices = data.models;
-        this.notifySubscribers();
+        try {
+            const response = await fetch('/api/rvc/edge-models');
+            const data = await response.json();
+            if (!response.ok) {
+                this.edgeVoices = [];
+                this.notifySubscribers();
+                return;
+            }
+            this.edgeVoices = data.models ?? [];
+            this.notifySubscribers();
+        } catch (error) {
+            console.error("Failed to fetch RVC edge voices:", error);
+            this.edgeVoices = [];
+            this.notifySubscribers();
+        }
     }
 
     getVoices(): string[] {
@@ -83,6 +105,9 @@ export class RVCProvider extends BaseTTSProvider {
     }
 
     async setVoice(voice: string): Promise<void> {
+        if (!voice) {
+            return;
+        }
         const response = await fetch(`/api/rvc/load_model/${voice}`, {
             method: 'POST'
         });
