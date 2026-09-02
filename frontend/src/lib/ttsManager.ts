@@ -7,18 +7,20 @@ import { detectFillerMood, fetchFillerAudio } from './ttsFiller';
 
 type TTSProvider = "gpt-sovits" | "rvc";
 type TTSUpdateCallback = () => void;
+type PlaybackMode = "idle" | "filler" | "speech";
 
-const FILLER_STOP_GAP_MS = 80;
+const FILLER_STOP_GAP_MS = 150;
 
 export class TTSManager {
     private abortController: AbortController | null = null;
     private currentAudio: HTMLAudioElement | null = null;
     private isProcessing: boolean = false;
     private isPlaying: boolean = false;
-    private isFillerPlaying: boolean = false;
+    private playbackMode: PlaybackMode = "idle";
     private fillerSession: number = 0;
     private audioContext: AudioContext | null = null;
     private fillerAudio: HTMLAudioElement | null = null;
+    private fillerVolumeTimer: number | null = null;
     private selectedProvider: TTSProvider;
     private subscribers: Set<TTSUpdateCallback> = new Set();
     private providers: Record<TTSProvider, BaseTTSProvider>;
@@ -56,8 +58,8 @@ export class TTSManager {
 
     private setupPipelineSubscription() {
         return pipelineManager.subscribe(() => {
-            this.processNextTTS();
-            this.processNextAudio();
+            void this.processNextTTS();
+            void this.processNextAudio();
         });
     }
 
@@ -72,7 +74,26 @@ export class TTSManager {
         globalStateManager.updateState("ttsLiveVolume", 0);
     }
 
-    private analyzeAudio(audio: HTMLAudioElement, isFiller = false) {
+    private clearFillerVolumeTimer() {
+        if (this.fillerVolumeTimer !== null) {
+            window.clearInterval(this.fillerVolumeTimer);
+            this.fillerVolumeTimer = null;
+        }
+    }
+
+    private startFillerVolumePulse() {
+        this.clearFillerVolumeTimer();
+        this.fillerVolumeTimer = window.setInterval(() => {
+            if (this.playbackMode !== "filler") {
+                this.clearFillerVolumeTimer();
+                return;
+            }
+            globalStateManager.updateState("ttsLiveVolume", 0.15 + Math.random() * 0.1);
+        }, 120);
+    }
+
+    /** Lip-sync analysis for real speech only — filler uses a separate plain-audio path. */
+    private analyzeSpeechAudio(audio: HTMLAudioElement) {
         try {
             const audioContext = this.getAudioContext();
             if (audioContext.state === "suspended") {
@@ -87,13 +108,11 @@ export class TTSManager {
             analyser.connect(audioContext.destination);
 
             const updateVolume = () => {
-                if (isFiller && !this.isFillerPlaying) return;
-                if (!isFiller && this.currentAudio !== audio) return;
+                if (this.playbackMode !== "speech" || this.currentAudio !== audio) return;
 
                 analyser.getByteFrequencyData(dataArray);
                 const avgVolume = dataArray.reduce((a, b) => a + b, 0);
-                const normalizedVolume = avgVolume / 15096;
-                globalStateManager.updateState("ttsLiveVolume", normalizedVolume);
+                globalStateManager.updateState("ttsLiveVolume", avgVolume / 15096);
                 if (!audio.paused) {
                     requestAnimationFrame(updateVolume);
                 }
@@ -101,13 +120,21 @@ export class TTSManager {
 
             updateVolume();
         } catch (err) {
-            console.warn("Audio analysis unavailable:", err);
+            console.warn("Speech audio analysis unavailable:", err);
         }
     }
 
+    private canPlayFiller(): boolean {
+        return this.playbackMode === "idle" && !this.isPlaying;
+    }
+
     private async stopFillerAndWait(): Promise<void> {
+        this.clearFillerVolumeTimer();
+
         if (!this.fillerAudio) {
-            this.isFillerPlaying = false;
+            if (this.playbackMode === "filler") {
+                this.playbackMode = "idle";
+            }
             this.resetLiveVolume();
             return;
         }
@@ -116,15 +143,19 @@ export class TTSManager {
         audio.loop = false;
         audio.onended = null;
         audio.onerror = null;
+        audio.muted = true;
         audio.pause();
         audio.currentTime = 0;
+        audio.removeAttribute("src");
+        audio.load();
 
-        if (audio.src.startsWith("blob:")) {
-            URL.revokeObjectURL(audio.src);
+        if (this.fillerAudio === audio) {
+            this.fillerAudio = null;
         }
 
-        this.fillerAudio = null;
-        this.isFillerPlaying = false;
+        if (this.playbackMode === "filler") {
+            this.playbackMode = "idle";
+        }
         this.resetLiveVolume();
 
         await new Promise((resolve) => setTimeout(resolve, FILLER_STOP_GAP_MS));
@@ -139,13 +170,21 @@ export class TTSManager {
         textToSpeak: string,
         userInput?: string
     ) {
+        if (!this.canPlayFiller()) return;
+
         const fillerUrl = await fetchFillerAudio(
             detectFillerMood(textToSpeak, userInput ?? ""),
             textToSpeak,
             userInput ?? ""
         );
 
-        if (!fillerUrl || session !== this.fillerSession || !this.isProcessing) {
+        if (
+            !fillerUrl ||
+            session !== this.fillerSession ||
+            !this.isProcessing ||
+            this.isPlaying ||
+            this.playbackMode !== "idle"
+        ) {
             if (fillerUrl?.startsWith("blob:")) {
                 URL.revokeObjectURL(fillerUrl);
             }
@@ -153,17 +192,32 @@ export class TTSManager {
         }
 
         await this.stopFillerAndWait();
-        if (session !== this.fillerSession || !this.isProcessing) return;
+
+        if (
+            session !== this.fillerSession ||
+            !this.isProcessing ||
+            this.isPlaying ||
+            this.playbackMode !== "idle"
+        ) {
+            if (fillerUrl.startsWith("blob:")) {
+                URL.revokeObjectURL(fillerUrl);
+            }
+            return;
+        }
 
         const audio = new Audio(fillerUrl);
         audio.loop = false;
+        audio.volume = 0.55;
         this.fillerAudio = audio;
-        this.isFillerPlaying = true;
+        this.playbackMode = "filler";
 
         const clearFiller = () => {
             if (this.fillerAudio !== audio) return;
             this.fillerAudio = null;
-            this.isFillerPlaying = false;
+            this.clearFillerVolumeTimer();
+            if (this.playbackMode === "filler") {
+                this.playbackMode = "idle";
+            }
             this.resetLiveVolume();
         };
 
@@ -172,11 +226,19 @@ export class TTSManager {
 
         try {
             await audio.play();
-            if (session !== this.fillerSession || !this.isProcessing) {
-                await this.stopFillerAndWait();
+            if (
+                session !== this.fillerSession ||
+                !this.isProcessing ||
+                this.isPlaying
+            ) {
+                audio.pause();
+                clearFiller();
+                if (audio.src.startsWith("blob:")) {
+                    URL.revokeObjectURL(audio.src);
+                }
                 return;
             }
-            this.analyzeAudio(audio, true);
+            this.startFillerVolumePulse();
         } catch (err) {
             console.warn("Filler playback skipped:", err);
             clearFiller();
@@ -219,7 +281,10 @@ export class TTSManager {
 
         this.isProcessing = true;
         const session = this.fillerSession;
-        void this.playFillerWhileProcessing(session, textToSpeak, task.input);
+
+        if (!this.isPlaying && this.playbackMode === "idle") {
+            void this.playFillerWhileProcessing(session, textToSpeak, task.input);
+        }
 
         try {
             const audioUrl = await this.generateAudioFromText(textToSpeak);
@@ -241,6 +306,7 @@ export class TTSManager {
     private finishPlayback(taskId: string, responseIndex: number) {
         this.isPlaying = false;
         this.currentAudio = null;
+        this.playbackMode = "idle";
         this.resetLiveVolume();
         pipelineManager.markPlaybackFinished(taskId, responseIndex);
     }
@@ -256,11 +322,12 @@ export class TTSManager {
             this.invalidateFillerSession();
             await this.stopFillerAndWait();
             this.isPlaying = false;
+            this.playbackMode = "idle";
             pipelineManager.markInterruptionState("audio");
             return;
         }
 
-        if (this.isPlaying || this.isFillerPlaying) return;
+        if (this.isPlaying || this.playbackMode !== "idle") return;
 
         const next = pipelineManager.getNextTaskForAudio();
         if (!next) return;
@@ -268,9 +335,13 @@ export class TTSManager {
         const { taskId, responseIndex, task } = next;
         const audioUrl = task.response[responseIndex].audio;
 
+        this.invalidateFillerSession();
         await this.stopFillerAndWait();
 
+        if (this.playbackMode !== "idle" || this.isPlaying) return;
+
         this.isPlaying = true;
+        this.playbackMode = "speech";
 
         const audio = new Audio(audioUrl!);
         this.currentAudio = audio;
@@ -286,7 +357,7 @@ export class TTSManager {
 
         try {
             await audio.play();
-            this.analyzeAudio(audio, false);
+            this.analyzeSpeechAudio(audio);
         } catch (err) {
             console.error("Audio play failed:", err);
             this.finishPlayback(taskId, responseIndex);
