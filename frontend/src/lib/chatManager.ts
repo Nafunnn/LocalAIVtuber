@@ -2,6 +2,7 @@ import { HistoryItem } from './types';
 import { pipelineManager } from './pipelineManager';
 import { cut5 } from './utils';
 import { createNewSession, updateSession, fetchSessionContent } from './sessionManager';
+import { cameraManager } from './cameraManager';
 
 type ChatUpdateCallback = (messages: HistoryItem[]) => void;
 
@@ -24,6 +25,7 @@ export class ChatManager {
     private ocrPrompt: string = '';
     private currentImage: string = '';
     private currentImageMime: string = 'image/jpeg';
+    private currentCameraImage: string = '';
     private visionModelHint: boolean = false;
     private retrievedContext: string = '';
     private fullSystemPrompt: string = '';
@@ -35,7 +37,9 @@ export class ChatManager {
         'gemma4', 'gemma-4', 'llava', 'moondream', 'vision', 'minicpm-v', 'qwen2.5-vl', 'qwen3-vl'
     ];
     private static readonly SCREEN_QUERY_RE =
-        /\b(screen|screenshot|display|monitor|desktop|window|tab|youtube|browser|see|look|watching|ocr|text on|what('?s| is) on)\b/i;
+        /\b(screen|screenshot|display|monitor|desktop|window|tab|youtube|browser|ocr|text on|what('?s| is) on (my |the )?screen)\b|layar|screenshot|monitor/i;
+    private static readonly CAMERA_QUERY_RE =
+        /\b(camera|webcam|cam\b|see me|look at me|how do i look|what do i look|selfie|face|my appearance|do i look|from the camera|on (the |my )?camera)\b|kamera|melihat(ku| aku)|lihat(ku| aku)|wajah|penampilan|dari kamera/i;
 
     constructor() {
         this.setupPipelineSubscription();
@@ -98,6 +102,14 @@ export class ChatManager {
         this.notifySubscribers('onImageChange');
     }
 
+    public setCurrentCameraImage(image: string) {
+        this.currentCameraImage = image;
+    }
+
+    public getCurrentCameraImage(): string {
+        return this.currentCameraImage;
+    }
+
     public setVisionModelHint(enabled: boolean) {
         this.visionModelHint = enabled;
     }
@@ -108,17 +120,50 @@ export class ChatManager {
         return ChatManager.VISION_MODEL_HINTS.some((hint) => id.includes(hint));
     }
 
-    private shouldAttachImage(userText: string): boolean {
-        if (!this.currentImage.trim()) return false;
-        if (this.visionModelHint) return true;
+    private isCameraQuery(userText: string): boolean {
+        return ChatManager.CAMERA_QUERY_RE.test(userText);
+    }
+
+    private isScreenQuery(userText: string): boolean {
         return ChatManager.SCREEN_QUERY_RE.test(userText);
     }
 
-    private buildImagePayload(): string | null {
-        if (!this.currentImage.trim()) return null;
-        const raw = this.currentImage.trim();
-        if (raw.startsWith('data:')) return raw.split(',', 2)[1] ?? raw;
-        return raw;
+    private refreshCameraFrame(): string | null {
+        if (!cameraManager.isReady()) return null;
+        const frame = cameraManager.captureJpegBase64(1024, 0.85);
+        if (frame) {
+            this.currentCameraImage = frame;
+        }
+        return frame;
+    }
+
+    private collectImagesForRequest(userText: string): string[] {
+        const images: string[] = [];
+        const wantsCamera = this.isCameraQuery(userText);
+        const wantsScreen = this.isScreenQuery(userText);
+        const vagueSee =
+            /\b(see|look|lihat|melihat)\b/i.test(userText) && !wantsScreen;
+
+        if (wantsCamera || (vagueSee && cameraManager.isReady())) {
+            const cam = this.refreshCameraFrame() || this.currentCameraImage.trim();
+            if (cam) {
+                images.push(cam.startsWith('data:') ? (cam.split(',', 2)[1] ?? cam) : cam);
+            }
+        }
+
+        if (wantsScreen || (this.visionModelHint && !wantsCamera && this.currentImage.trim())) {
+            const screen = this.currentImage.trim();
+            if (screen) {
+                images.push(screen.startsWith('data:') ? (screen.split(',', 2)[1] ?? screen) : screen);
+            }
+        }
+
+        if (wantsCamera && images.length === 0) {
+            const cam = this.refreshCameraFrame();
+            if (cam) images.push(cam);
+        }
+
+        return images;
     }
 
     public getRetrievedContext(): string {
@@ -147,10 +192,30 @@ export class ChatManager {
         this.notifySubscribers('onFullSystemPromptChange');
     }
 
-    private buildSystemPrompt(memoryContext = ""): string {
-        const hasVision = Boolean(this.visionPrompt.trim() || this.ocrPrompt.trim());
+    private buildSystemPrompt(memoryContext = "", userText = ""): string {
+        const hasScreen = Boolean(this.visionPrompt.trim() || this.ocrPrompt.trim() || this.currentImage.trim());
+        const cameraLive = cameraManager.isReady();
+        const wantsCamera = this.isCameraQuery(userText);
 
-        const screenAwareness = hasVision
+        const cameraAwareness = cameraLive
+            ? [
+                "[LIVE CAMERA]",
+                "You can currently see the user through their webcam.",
+                "When a camera image is attached, describe what you see about the person naturally (appearance, expression, clothing, setting) as if looking at them.",
+                "If they ask whether you can see them / see them from the camera, say yes and describe them warmly.",
+                "Never say you cannot see them while the live camera is active.",
+                "Do not mention technical camera capture details.",
+                "",
+              ].join("\n")
+            : wantsCamera
+            ? [
+                "[CAMERA UNAVAILABLE]",
+                "The user asked about the camera, but webcam share is not active. Gently ask them to enable \"Share camera with AI\" on the Input page.",
+                "",
+              ].join("\n")
+            : "";
+
+        const screenAwareness = hasScreen
             ? [
                 "[LIVE SCREEN SHARE]",
                 "You can currently see the user's screen through a live screen share.",
@@ -174,7 +239,7 @@ export class ChatManager {
             : "";
         const instructionsSection = `[INSTRUCTIONS]\n${this.systemPrompt}\n\n`;
 
-        return screenAwareness + visionSection + ocrSection + contextSection + instructionsSection;
+        return cameraAwareness + screenAwareness + visionSection + ocrSection + contextSection + instructionsSection;
     }
 
     private setupPipelineSubscription() {
@@ -243,8 +308,13 @@ export class ChatManager {
                 this.setRetrievedContext('');
             }
 
-            // Assemble system prompt with labeled sections + live screen awareness
-            const systemPromptWithContext = this.buildSystemPrompt(contextText);
+            // Capture webcam frame before building prompt when camera share is live
+            if (cameraManager.isReady() && (this.isCameraQuery(input) || this.visionModelHint)) {
+                this.refreshCameraFrame();
+            }
+
+            // Assemble system prompt with labeled sections + live camera/screen awareness
+            const systemPromptWithContext = this.buildSystemPrompt(contextText, input);
 
             // Set the retrieved context and full system prompt
             this.setRetrievedContext(contextText);
@@ -255,10 +325,9 @@ export class ChatManager {
                 history: history,
                 systemPrompt: systemPromptWithContext,
             };
-            // Attach screenshot only for multimodal models or screen-related questions
-            if (this.shouldAttachImage(input)) {
-                const image = this.buildImagePayload();
-                if (image) payload.images = [image];
+            const images = this.collectImagesForRequest(input);
+            if (images.length > 0) {
+                payload.images = images;
             }
 
             console.log("getCompletion", JSON.stringify({
@@ -266,6 +335,7 @@ export class ChatManager {
                 history: history,
                 systemPrompt: systemPromptWithContext,
                 hasImage: Array.isArray(payload.images),
+                imageCount: images.length,
             }));
             const response = await fetch('/api/completion', {
                 method: 'POST',
@@ -417,8 +487,12 @@ export class ChatManager {
             }
         }
 
+        if (cameraManager.isReady() && (this.isCameraQuery(lastUserMessage.content) || this.visionModelHint)) {
+            this.refreshCameraFrame();
+        }
+
         // Assemble system prompt with context (same logic as sendMessage)
-        const systemPromptWithContext = this.buildSystemPrompt(contextText);
+        const systemPromptWithContext = this.buildSystemPrompt(contextText, lastUserMessage.content);
         this.setRetrievedContext(contextText);
         this.setFullSystemPrompt(systemPromptWithContext);
 
@@ -427,9 +501,9 @@ export class ChatManager {
             history: historyUpToMessage.slice(0, -1),
             systemPrompt: systemPromptWithContext,
         };
-        if (this.shouldAttachImage(lastUserMessage.content)) {
-            const image = this.buildImagePayload();
-            if (image) payload.images = [image];
+        const images = this.collectImagesForRequest(lastUserMessage.content);
+        if (images.length > 0) {
+            payload.images = images;
         }
 
         // Send completion request with history up to the user message

@@ -4,6 +4,7 @@ import { AppSidebar } from "@/components/app-sidebar"
 import pageMapping from "@/constants/page-mapping"
 import { SettingsProvider } from "@/context/SettingsContext"
 import { PushToTalkOverlay } from "@/components/push-to-talk-overlay"
+import { CameraShareBootstrap } from "@/components/camera-share-bootstrap"
 
 type PageKey = keyof typeof pageMapping
 
@@ -44,6 +45,7 @@ function Mainpage() {
                                 ) : null;
                             })}
                         </main>
+                        <CameraShareBootstrap />
                         <PushToTalkOverlay />
                     </div>
             </SettingsProvider>

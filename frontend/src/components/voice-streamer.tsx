@@ -12,7 +12,9 @@ import { Panel } from "./panel";
 import { ScrollArea } from "@radix-ui/react-scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { voiceInputManager, type VoiceInputState } from "@/lib/voiceInputManager";
+import { cameraManager, type CameraState } from "@/lib/cameraManager";
 import { useSettings } from "@/context/SettingsContext";
 
 interface MicrophoneDevice {
@@ -30,23 +32,25 @@ interface MediaDeviceOption {
 
 const MICROPHONE_SETTING = "input.microphone.device";
 const CAMERA_SETTING = "input.camera.deviceId";
+const CAMERA_ENABLED_SETTING = "input.camera.enabled";
 const LANGUAGE_SETTING = "input.language";
 
 export default function VoiceStreamer() {
   const { settings, updateSetting } = useSettings();
   const [voiceState, setVoiceState] = useState<VoiceInputState>(voiceInputManager.getState());
+  const [cameraState, setCameraState] = useState<CameraState>(cameraManager.getState());
   const [transcriptions, setTranscriptions] = useState<string[]>(voiceInputManager.getTranscriptions());
   const [microphones, setMicrophones] = useState<MicrophoneDevice[]>([]);
   const [cameras, setCameras] = useState<MediaDeviceOption[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
 
   const selectedMic =
     settings[MICROPHONE_SETTING] !== undefined && settings[MICROPHONE_SETTING] !== null
       ? String(settings[MICROPHONE_SETTING])
       : "default";
   const selectedCamera = settings[CAMERA_SETTING] || "default";
+  const cameraShareEnabled = Boolean(settings[CAMERA_ENABLED_SETTING]);
   const selectedLanguage = settings[LANGUAGE_SETTING] || "en";
 
   useEffect(() => {
@@ -55,6 +59,17 @@ export default function VoiceStreamer() {
       setTranscriptions(voiceInputManager.getTranscriptions());
     });
   }, []);
+
+  useEffect(() => {
+    return cameraManager.subscribe((state) => {
+      setCameraState(state);
+      cameraManager.attachPreview(videoRef.current);
+    });
+  }, []);
+
+  useEffect(() => {
+    cameraManager.attachPreview(videoRef.current);
+  }, [cameraState.ready, cameraState.enabled]);
 
   const loadMicrophones = useCallback(async () => {
     const response = await fetch("/api/input/microphones");
@@ -96,37 +111,6 @@ export default function VoiceStreamer() {
     loadDevices();
   }, [loadMicrophones, loadCameras]);
 
-  const startCameraPreview = useCallback(async (deviceId: string) => {
-    if (!navigator.mediaDevices?.getUserMedia) return;
-
-    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
-
-    const constraints: MediaStreamConstraints = {
-      video: deviceId && deviceId !== "default" ? { deviceId: { exact: deviceId } } : true,
-      audio: false,
-    };
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      cameraStreamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      await loadCameras();
-    } catch {
-      // Preview is optional.
-    }
-  }, [loadCameras]);
-
-  useEffect(() => {
-    startCameraPreview(selectedCamera);
-    return () => {
-      cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
-      cameraStreamRef.current = null;
-    };
-  }, [selectedCamera, startCameraPreview]);
-
   const handleMicrophoneChange = async (value: string) => {
     const index = value === "default" ? null : Number(value);
     const response = await fetch("/api/input/microphone", {
@@ -141,6 +125,17 @@ export default function VoiceStreamer() {
   const handleCameraChange = async (value: string) => {
     const deviceId = value === "default" ? "" : value;
     await updateSetting(CAMERA_SETTING, deviceId);
+    await cameraManager.setDeviceId(deviceId);
+    await loadCameras();
+  };
+
+  const handleCameraShareToggle = async (enabled: boolean) => {
+    await updateSetting(CAMERA_ENABLED_SETTING, enabled);
+    const ok = await cameraManager.setEnabled(enabled);
+    if (ok) {
+      await loadCameras();
+      cameraManager.attachPreview(videoRef.current);
+    }
   };
 
   const handleLanguageChange = async (value: string) => {
@@ -203,7 +198,24 @@ export default function VoiceStreamer() {
           </div>
 
           <div className="space-y-2 md:col-span-2">
-            <Label htmlFor="camera-select">Camera</Label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <Label htmlFor="camera-select">Camera</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Enable share so the AI can see you and describe how you look.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="camera-share-toggle" className="text-sm font-normal">
+                  Share camera with AI
+                </Label>
+                <Switch
+                  id="camera-share-toggle"
+                  checked={cameraShareEnabled}
+                  onCheckedChange={handleCameraShareToggle}
+                />
+              </div>
+            </div>
             <Select
               value={selectedCamera || "default"}
               onValueChange={handleCameraChange}
@@ -220,14 +232,27 @@ export default function VoiceStreamer() {
                 ))}
               </SelectContent>
             </Select>
-            <div className="overflow-hidden rounded-md border bg-black/40 aspect-video max-h-48">
+            <div className="overflow-hidden rounded-md border bg-black/40 aspect-video max-h-48 relative">
               <video
                 ref={videoRef}
                 className="h-full w-full object-cover"
                 muted
                 playsInline
               />
+              {!cameraState.enabled && (
+                <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground bg-black/50 px-4 text-center">
+                  Camera share off — turn on “Share camera with AI” to let the model see you
+                </div>
+              )}
             </div>
+            {cameraState.error && (
+              <p className="text-sm text-destructive">{cameraState.error}</p>
+            )}
+            {cameraState.enabled && cameraState.ready && (
+              <p className="text-xs text-muted-foreground">
+                Live — ask “Can you see me from the camera?” or “How do I look?”
+              </p>
+            )}
           </div>
         </div>
 
