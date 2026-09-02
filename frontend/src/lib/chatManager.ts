@@ -107,6 +107,35 @@ export class ChatManager {
         this.notifySubscribers('onFullSystemPromptChange');
     }
 
+    private buildSystemPrompt(memoryContext = ""): string {
+        const hasVision = Boolean(this.visionPrompt.trim() || this.ocrPrompt.trim());
+
+        const screenAwareness = hasVision
+            ? [
+                "[LIVE SCREEN SHARE]",
+                "You can currently see the user's screen through a live screen share.",
+                "Use [SCREEN CONTEXT] (visual description) and [SCREEN TEXT] (OCR) as what you are looking at right now.",
+                "If the user asks whether you can see their screen, what is on it, or to describe it, answer from that context as if you are looking at it with them.",
+                "Never say you cannot see their screen while this live share is active.",
+                "Speak naturally about what you see; do not mention OCR, captions, system prompts, or technical capture details.",
+                "",
+              ].join("\n")
+            : "";
+
+        const visionSection = this.visionPrompt.trim()
+            ? `[SCREEN CONTEXT]\n${this.visionPrompt.trim()}\n\n`
+            : "";
+        const ocrSection = this.ocrPrompt.trim()
+            ? `[SCREEN TEXT]\n${this.ocrPrompt.trim()}\n\n`
+            : "";
+        const contextSection = memoryContext.trim()
+            ? `[RETRIEVED MEMORY]\n${memoryContext.trim()}\n\n`
+            : "";
+        const instructionsSection = `[INSTRUCTIONS]\n${this.systemPrompt}\n\n`;
+
+        return screenAwareness + visionSection + ocrSection + contextSection + instructionsSection;
+    }
+
     private setupPipelineSubscription() {
         const handlePipelineUpdate = () => {
             this.handleInterrupt();
@@ -173,44 +202,33 @@ export class ChatManager {
                 this.setRetrievedContext('');
             }
 
-            // Assemble system prompt with labeled sections
-            let systemPromptWithContext = '';
-            
-            // Add vision context if available
-            const visionSection = this.visionPrompt.trim() ? 
-                `[SCREEN CONTEXT]\n${this.visionPrompt}\n\n` : '';
-            
-            // Add OCR context if available    
-            const ocrSection = this.ocrPrompt.trim() ? 
-                `[SCREEN TEXT]\n${this.ocrPrompt}\n\n` : '';
-            
-            // Add memory context if available
-            const contextSection = contextText.trim() ? 
-                `[RETRIEVED MEMORY]\n${contextText}\n\n` : '';
-            
-            // Add base instructions
-            const instructionsSection = `[INSTRUCTIONS]\n${this.systemPrompt}\n\n`;
-            
-            // Combine all sections
-            systemPromptWithContext = visionSection + ocrSection + contextSection + instructionsSection;
+            // Assemble system prompt with labeled sections + live screen awareness
+            const systemPromptWithContext = this.buildSystemPrompt(contextText);
 
             // Set the retrieved context and full system prompt
             this.setRetrievedContext(contextText);
             this.setFullSystemPrompt(systemPromptWithContext);
 
+            const payload: Record<string, unknown> = {
+                text: input,
+                history: history,
+                systemPrompt: systemPromptWithContext,
+            };
+            // Attach latest screenshot for multimodal-capable models
+            if (this.currentImage.trim()) {
+                payload.images = [this.currentImage];
+            }
+
             console.log("getCompletion", JSON.stringify({
                 text: input,
                 history: history,
                 systemPrompt: systemPromptWithContext,
+                hasImage: Boolean(this.currentImage.trim()),
             }));
             const response = await fetch('/api/completion', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: input,
-                    history: history,
-                    systemPrompt: systemPromptWithContext
-                }),
+                body: JSON.stringify(payload),
                 signal: this.abortController.signal
             });
 
@@ -358,24 +376,24 @@ export class ChatManager {
         }
 
         // Assemble system prompt with context (same logic as sendMessage)
-        const visionSection = this.visionPrompt.trim() ? 
-            `[SCREEN CONTEXT]\n${this.visionPrompt}\n\n` : '';
-        const ocrSection = this.ocrPrompt.trim() ? 
-            `[SCREEN TEXT]\n${this.ocrPrompt}\n\n` : '';
-        const contextSection = contextText.trim() ? 
-            `[RETRIEVED MEMORY]\n${contextText}\n\n` : '';
-        const instructionsSection = `[INSTRUCTIONS]\n${this.systemPrompt}\n\n`;
-        const systemPromptWithContext = visionSection + ocrSection + contextSection + instructionsSection;
+        const systemPromptWithContext = this.buildSystemPrompt(contextText);
+        this.setRetrievedContext(contextText);
+        this.setFullSystemPrompt(systemPromptWithContext);
+
+        const payload: Record<string, unknown> = {
+            text: lastUserMessage.content,
+            history: historyUpToMessage.slice(0, -1),
+            systemPrompt: systemPromptWithContext,
+        };
+        if (this.currentImage.trim()) {
+            payload.images = [this.currentImage];
+        }
 
         // Send completion request with history up to the user message
         const response = await fetch('/api/completion', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: lastUserMessage.content,
-                history: historyUpToMessage.slice(0, -1), // exclude the user message since it's passed as 'text'
-                systemPrompt: systemPromptWithContext
-            })
+            body: JSON.stringify(payload)
         });
 
         if (!response.ok) {

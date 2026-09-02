@@ -15,6 +15,45 @@
   scrollbar-width: none;  /* Firefox */
 }
 
+/* Themed overlay scrollbar that stays out of the way */
+.scrollbar-themed {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.45 0 0 / 45%) transparent;
+  scrollbar-gutter: stable;
+}
+
+.scrollbar-themed::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-themed::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-themed::-webkit-scrollbar-thumb {
+  background-color: oklch(0.55 0 0 / 35%);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.scrollbar-themed::-webkit-scrollbar-thumb:hover {
+  background-color: oklch(0.7 0 0 / 55%);
+}
+
+.dark .scrollbar-themed {
+  scrollbar-color: oklch(0.7 0 0 / 35%) transparent;
+}
+
+.dark .scrollbar-themed::-webkit-scrollbar-thumb {
+  background-color: oklch(0.75 0 0 / 28%);
+}
+
+.dark .scrollbar-themed::-webkit-scrollbar-thumb:hover {
+  background-color: oklch(0.85 0 0 / 45%);
+}
+
 :root {
   --radius: 0.625rem;
   --background: oklch(1 0 0);

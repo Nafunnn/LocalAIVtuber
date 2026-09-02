@@ -32,7 +32,7 @@ function LLMPage() {
                     <div className="border-t-1 border-l-1 flex h-full min-h-0 w-6/12 flex-col overflow-hidden pl-20 pr-20 pt-4">
                         <Chatbox/>
                     </div>
-                    <ScrollArea className="h-full w-5/12 overflow-auto pr-20 pt-4">
+                    <ScrollArea className="h-full w-5/12 overflow-auto pr-20 pt-4 [&>[data-radix-scroll-area-viewport]]:scrollbar-themed">
                         <LLMMonitor />
                     </ScrollArea>
                 </div>

@@ -216,7 +216,7 @@ const Chatbox = () => {
                     </div>
                 ))}
             </SidePanel>
-            <div className="mb-4 min-h-0 flex-1 space-y-4 overflow-y-auto">
+            <div className="mb-4 min-h-0 flex-1 space-y-4 overflow-y-auto scrollbar-themed pr-1">
                 <EditableChatHistory
                     messages={displayedMessages}
                     sessionId={chatManager.getSessionId() ?? ""}

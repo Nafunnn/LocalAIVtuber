@@ -190,15 +190,19 @@ class VisionInput:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Process image and generate caption
-            inputs = self.processor(image, return_tensors="pt")
+            # Process image and generate a more detailed caption for screen-share use
+            prompt = "a detailed description of what is visible on this computer screen"
+            inputs = self.processor(image, prompt, return_tensors="pt")
             if self.device == 'cuda' and torch.cuda.is_available():
                 inputs = {k: v.to('cuda') for k, v in inputs.items()}
             
             with torch.no_grad():
-                out = self.model.generate(**inputs)
+                out = self.model.generate(**inputs, max_new_tokens=64)
             
             caption = self.processor.decode(out[0], skip_special_tokens=True)
+            # BLIP often echoes the prompt; strip it if present.
+            if caption.lower().startswith(prompt.lower()):
+                caption = caption[len(prompt):].strip(" :,-")
             
             self.logger.info(f"Caption generated: {caption}")
             return caption

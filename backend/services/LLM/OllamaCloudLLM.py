@@ -45,17 +45,42 @@ class OllamaCloudLLM(BaseLLM):
             options["seed"] = seed
         return options
 
-    def _build_messages(self, text: str, history: list, system_prompt: str) -> List[Dict[str, str]]:
-        messages = []
+    def _build_messages(
+        self,
+        text: str,
+        history: list,
+        system_prompt: str,
+        images: list | None = None,
+    ) -> List[Dict]:
+        messages: List[Dict] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         if history:
             for entry in history:
                 messages.append(entry)
-        messages.append({"role": "user", "content": text})
+
+        user_message: Dict = {"role": "user", "content": text}
+        if images:
+            cleaned = []
+            for image in images:
+                if not image:
+                    continue
+                value = str(image)
+                if "," in value and value.startswith("data:"):
+                    value = value.split(",", 1)[1]
+                cleaned.append(value)
+            if cleaned:
+                user_message["images"] = cleaned
+        messages.append(user_message)
         return messages
 
-    def _stream_chat(self, messages: List[Dict[str, str]], options: dict) -> Generator[str, None, None]:
+    def _stream_chat(
+        self,
+        messages: List[Dict],
+        options: dict,
+        *,
+        allow_image_fallback: bool = True,
+    ) -> Generator[str, None, None]:
         try:
             client = self._get_client()
             for part in client.chat(
@@ -73,10 +98,49 @@ class OllamaCloudLLM(BaseLLM):
                 raise ValueError("Invalid or missing Ollama API key") from e
             if status == 404:
                 raise ValueError(f"Model '{self.model}' not found on Ollama Cloud") from e
+            # Vision-capable request on a text-only model: retry without images once.
+            has_images = any(isinstance(m, dict) and m.get("images") for m in messages)
+            if allow_image_fallback and has_images:
+                logger.warning(
+                    f"Ollama Cloud rejected multimodal request ({e}); retrying without images"
+                )
+                stripped = []
+                for message in messages:
+                    if not isinstance(message, dict):
+                        stripped.append(message)
+                        continue
+                    copy = dict(message)
+                    copy.pop("images", None)
+                    stripped.append(copy)
+                yield from self._stream_chat(
+                    stripped,
+                    options,
+                    allow_image_fallback=False,
+                )
+                return
             raise ValueError(f"Ollama Cloud error: {e}") from e
         except ValueError:
             raise
         except Exception as e:
+            has_images = any(isinstance(m, dict) and m.get("images") for m in messages)
+            if allow_image_fallback and has_images:
+                logger.warning(
+                    f"Ollama Cloud multimodal failed ({e}); retrying without images"
+                )
+                stripped = []
+                for message in messages:
+                    if not isinstance(message, dict):
+                        stripped.append(message)
+                        continue
+                    copy = dict(message)
+                    copy.pop("images", None)
+                    stripped.append(copy)
+                yield from self._stream_chat(
+                    stripped,
+                    options,
+                    allow_image_fallback=False,
+                )
+                return
             raise ValueError(f"Failed to connect to Ollama Cloud: {e}") from e
 
     def get_chat_completion(
@@ -84,12 +148,14 @@ class OllamaCloudLLM(BaseLLM):
         text: str,
         history: list = [],
         system_prompt: str = "",
+        images: list | None = None,
         **sampling_params,
     ) -> Generator[str, None, None]:
-        messages = self._build_messages(text, history, system_prompt)
+        messages = self._build_messages(text, history, system_prompt, images=images)
         options = self._build_options(**sampling_params)
         logger.info(
-            f"Ollama Cloud inference - model: {self.model}, options: {options}"
+            f"Ollama Cloud inference - model: {self.model}, options: {options}, "
+            f"images={len(images) if images else 0}"
         )
         yield from self._stream_chat(messages, options)
 

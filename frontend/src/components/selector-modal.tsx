@@ -48,6 +48,7 @@ const ROLE_BADGE_LABELS: Record<string, string> = {
   conversational: "Conversational",
   balanced: "Balanced",
   premium: "Premium",
+  vision: "Vision",
 }
 
 export default function AIModelSelector() {
@@ -255,7 +256,8 @@ export default function AIModelSelector() {
 
   const getRoleBadge = (role: string) => {
     const label = ROLE_BADGE_LABELS[role] ?? role
-    return <Badge variant="secondary" className="ml-auto">{label}</Badge>
+    const variant = role === "vision" ? "default" : "secondary"
+    return <Badge variant={variant} className="ml-auto">{label}</Badge>
   }
 
   const selectedLabel = isOllamaCloud
@@ -309,6 +311,9 @@ export default function AIModelSelector() {
                         <CardTitle className="text-lg">{model.displayName}</CardTitle>
                         {internalSelectedOllama?.modelId === model.modelId && (
                           <Check className="h-4 w-4 text-primary" />
+                        )}
+                        {model.type === "vision" && (
+                          <Badge variant="outline">Multimodal</Badge>
                         )}
                         {getRoleBadge(model.role)}
                       </div>

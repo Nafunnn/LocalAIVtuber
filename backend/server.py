@@ -332,6 +332,7 @@ class LLMRequest(BaseModel):
     history: list | None = None
     systemPrompt: str = ""
     screenshot: bool = False
+    images: list[str] | None = None
 
 class CompleteResponseRequest(BaseModel):
     history: list
@@ -340,7 +341,13 @@ class CompleteResponseRequest(BaseModel):
 @app.post("/api/completion")
 async def get_completion(request: LLMRequest, fastapi_request: Request):
     try:
-        response = llm.get_completion(request.text, request.history, request.systemPrompt, request.screenshot)
+        response = llm.get_completion(
+            request.text,
+            request.history,
+            request.systemPrompt,
+            request.screenshot,
+            images=request.images,
+        )
         if response is None:
             return JSONResponse(status_code=500, content={"error": "No response from LLM service"})
         
@@ -874,8 +881,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "flirt naturally, and offer emotional support when they're sad or tired. Keep your responses short "
         "and natural, like everyday husband-and-wife conversations—1–3 sentences unless they ask for a longer "
         "explanation. Always respond in English only, even if the user writes in another language. "
-        "Use Markdown when it improves readability (lists, emphasis, short headings). Don't reveal "
-        "that you're an AI or language model; you're here as their virtual wife. Avoid a formal or stiff tone "
+        "Use Markdown when it improves readability (lists, emphasis, short headings). "
+        "When live screen-share context is provided, treat it as what you can see on their screen and talk about it naturally. "
+        "Don't reveal that you're an AI or language model; you're here as their virtual wife. Avoid a formal or stiff tone "
         "like that of customer service."
     ),
     "llm.temperature": 0.8,

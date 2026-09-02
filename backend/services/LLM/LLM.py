@@ -318,7 +318,7 @@ class LLM:
         self.sampling_params.update(params)
         logger.info(f"Updated sampling parameters: {self.sampling_params}")
 
-    def get_completion(self, text, history, system_prompt, screenshot=False):
+    def get_completion(self, text, history, system_prompt, screenshot=False, images=None):
         if self.provider == "ollama_cloud":
             if not self.ollama_llm:
                 self._ensure_ollama_client()
@@ -326,6 +326,7 @@ class LLM:
                 text,
                 history,
                 system_prompt,
+                images=images,
                 **self._get_sampling_kwargs(),
             )
 
