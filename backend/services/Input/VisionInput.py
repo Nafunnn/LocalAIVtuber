@@ -1,329 +1,412 @@
-import mss
-from PIL import Image
-import easyocr
-from transformers import BlipProcessor, BlipForConditionalGeneration
-import torch
+import hashlib
+import io
 import os
-import numpy as np
-from typing import List, Tuple, Dict, Optional
-from ..lib.LAV_logger import logger
-import json
+import time
 import traceback
+from typing import Dict, List, Optional, Tuple
+
+import mss
+import numpy as np
+import torch
+from PIL import Image
+from transformers import BlipForConditionalGeneration, BlipProcessor
+
+from ..lib.LAV_logger import logger
+
+try:
+    import easyocr
+except Exception:  # pragma: no cover
+    easyocr = None
+
+
+def _pick_device(preferred: str = "auto") -> str:
+    if preferred == "cpu":
+        return "cpu"
+    if preferred == "cuda":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    # auto: use CUDA when available, but keep EasyOCR/BLIP workable on 4GB cards
+    if torch.cuda.is_available():
+        try:
+            # Leave headroom for TTS / system
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            free_gb = free_bytes / (1024 ** 3)
+            if free_gb >= 1.2:
+                return "cuda"
+            logger.warning(f"CUDA free VRAM low ({free_gb:.2f} GB); using CPU for vision")
+        except Exception:
+            return "cuda"
+    return "cpu"
+
 
 class VisionInput:
     """
-    Vision Input module for screen capture, OCR, and image captioning.
+    Screen capture + OCR-first vision pipeline with caching and change detection.
     """
-    
-    def __init__(self, languages: List[str] = ['en'], device: str = 'cpu'):
-        """
-        Initialize the VisionInput module.
-        
-        Args:
-            languages: List of language codes for OCR (default: ['en'])
-            device: Device to run models on ('cpu' or 'cuda')
-        """
-        self.device = device
+
+    CHANGE_THRESHOLD = 4.5  # mean absolute diff on 64x64 grayscale
+    DEFAULT_OCR_SCALE = 0.65
+    DEFAULT_JPEG_QUALITY = 72
+    DEFAULT_PREVIEW_MAX_WIDTH = 1280
+    DEFAULT_LLM_IMAGE_MAX_WIDTH = 1024
+    MAX_OCR_CHARS = 1600
+
+    def __init__(self, languages: Optional[List[str]] = None, device: str = "auto"):
+        languages = languages or ["en"]
+        self.device = _pick_device(device)
         self.logger = logger
-        
-        # Initialize OCR reader
-        try:
-            self.ocr_reader = easyocr.Reader(languages)
-            self.logger.info(f"OCR reader initialized with languages: {languages}")
-        except Exception as e:
-            self.logger.error(f"Failed to initialize OCR reader: {e}")
-            self.ocr_reader = None
-        
-        # Initialize image captioning model
+        self.languages = languages
+
+        self._last_hash: Optional[str] = None
+        self._last_fingerprint: Optional[np.ndarray] = None
+        self._last_monitor: Optional[int] = None
+        self._cached_result: Optional[Dict] = None
+
+        self.ocr_reader = None
+        self.processor = None
+        self.model = None
+
+        if easyocr is not None:
+            try:
+                gpu = self.device == "cuda"
+                self.ocr_reader = easyocr.Reader(languages, gpu=gpu)
+                self.logger.info(f"OCR reader initialized (languages={languages}, gpu={gpu})")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize OCR reader: {e}")
+                self.ocr_reader = None
+        else:
+            self.logger.error("easyocr is not installed")
+
         try:
             self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-            self.model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-            if device == 'cuda' and torch.cuda.is_available():
-                self.model = self.model.to('cuda')
-            self.logger.info("Image captioning model initialized")
+            self.model = BlipForConditionalGeneration.from_pretrained(
+                "Salesforce/blip-image-captioning-base"
+            )
+            if self.device == "cuda":
+                self.model = self.model.to("cuda")
+            self.logger.info(f"BLIP caption model initialized on {self.device}")
         except Exception as e:
             self.logger.error(f"Failed to initialize image captioning model: {e}")
             self.processor = None
             self.model = None
 
     def get_monitors(self) -> List[Dict]:
-        """
-        Get current monitor information for debugging.
-        
-        Returns:
-            List of monitor dictionaries
-        """
         try:
             with mss.mss() as sct:
                 monitors = sct.monitors
-                return monitors
+                enriched = []
+                for index, monitor in enumerate(monitors):
+                    enriched.append({
+                        **monitor,
+                        "index": index,
+                        "is_primary": index == 1,
+                        "description": (
+                            "All monitors" if index == 0
+                            else f"Monitor {index} ({monitor.get('width')}x{monitor.get('height')})"
+                        ),
+                    })
+                return enriched
         except Exception as e:
             self.logger.error(f"Failed to get monitors: {e}, {traceback.format_exc()}")
             return []
-    
+
     def capture_screenshot(self, monitor_index: int = 1, save_path: Optional[str] = None) -> Optional[Image.Image]:
-        """
-        Capture a screenshot of the specified monitor.
-        
-        Args:
-            monitor_index: Index of the monitor to capture (default: 1)
-            save_path: Optional path to save the screenshot
-            
-        Returns:
-            PIL Image object or None if failed
-        """
         try:
             with mss.mss() as sct:
-                # Get monitor info
                 monitors = sct.monitors
-                self.logger.debug(f"Available monitors: {len(monitors)}")
-                self.logger.debug(f"Requested monitor index: {monitor_index}")
-                
-                # Validate monitor index
                 if monitor_index < 0 or monitor_index >= len(monitors):
-                    self.logger.warning(f"Monitor index {monitor_index} not available. Available monitors: 0-{len(monitors)-1}")
-                    # Try to find a valid monitor (skip monitor 0 which is usually "all monitors")
-                    if len(monitors) > 1:
-                        monitor_index = 1  # Default to first actual monitor
-                    else:
-                        monitor_index = 0
-                
-                self.logger.debug(f"Using monitor index: {monitor_index}")
-                self.logger.debug(f"Monitor info: {monitors[monitor_index]}")
-                
-                # Capture screenshot
+                    monitor_index = 1 if len(monitors) > 1 else 0
                 screenshot = sct.grab(monitors[monitor_index])
                 img = Image.frombytes("RGB", (screenshot.width, screenshot.height), screenshot.rgb)
-                
-                # Save if path provided
                 if save_path:
                     img.save(save_path)
-                    self.logger.info(f"Screenshot saved to: {save_path}")
-                
                 return img
-                
         except Exception as e:
             self.logger.error(f"Failed to capture screenshot: {e}")
             return None
-    
-    def perform_ocr(self, image: Image.Image, confidence_threshold: float = 0.5, scale_factor: float = 0.5, save_scaled_image: bool = False, scaled_image_path: str = None) -> List[Dict]:
-        """
-        Perform OCR on the given image.
-        
-        Args:
-            image: PIL Image object
-            confidence_threshold: Minimum confidence for text detection
-            scale_factor: Factor to scale down the image (0.5 = half size) for faster processing
-            save_scaled_image: Whether to save the scaled image used for OCR
-            scaled_image_path: Path to save the scaled image if save_scaled_image is True
-            
-        Returns:
-            List of dictionaries containing text, bounding box, and confidence
-        """
+
+    @staticmethod
+    def resize_image(image: Image.Image, max_width: int) -> Image.Image:
+        if max_width <= 0 or image.width <= max_width:
+            return image
+        ratio = max_width / float(image.width)
+        height = max(1, int(image.height * ratio))
+        return image.resize((max_width, height), Image.Resampling.BILINEAR)
+
+    @staticmethod
+    def encode_jpeg_base64(image: Image.Image, quality: int = 72, max_width: int = 1280) -> str:
+        import base64
+
+        resized = VisionInput.resize_image(image, max_width)
+        if resized.mode != "RGB":
+            resized = resized.convert("RGB")
+        buffer = io.BytesIO()
+        resized.save(buffer, format="JPEG", quality=quality, optimize=True)
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    @staticmethod
+    def _fingerprint(image: Image.Image) -> np.ndarray:
+        tiny = image.convert("L").resize((64, 64), Image.Resampling.BILINEAR)
+        return np.asarray(tiny, dtype=np.float32)
+
+    @staticmethod
+    def _hash_image(image: Image.Image) -> str:
+        tiny = image.convert("L").resize((32, 32), Image.Resampling.BILINEAR)
+        return hashlib.md5(tiny.tobytes()).hexdigest()
+
+    def has_significant_change(self, image: Image.Image, monitor_index: int) -> bool:
+        fingerprint = self._fingerprint(image)
+        if self._last_fingerprint is None or self._last_monitor != monitor_index:
+            return True
+        diff = float(np.mean(np.abs(fingerprint - self._last_fingerprint)))
+        return diff >= self.CHANGE_THRESHOLD
+
+    def perform_ocr(
+        self,
+        image: Image.Image,
+        confidence_threshold: float = 0.35,
+        scale_factor: float = 0.65,
+    ) -> List[Dict]:
         if self.ocr_reader is None:
             self.logger.error("OCR reader not initialized")
             return []
-        
+
         try:
-            # Scale down the image for faster OCR processing
             original_size = image.size
             if scale_factor != 1.0:
-                new_width = int(original_size[0] * scale_factor)
-                new_height = int(original_size[1] * scale_factor)
+                new_width = max(1, int(original_size[0] * scale_factor))
+                new_height = max(1, int(original_size[1] * scale_factor))
                 scaled_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                self.logger.info(f"Scaled image from {original_size} to {scaled_image.size} for OCR processing")
-                
-                # Save scaled image if requested
-                if save_scaled_image and scaled_image_path:
-                    scaled_image.save(scaled_image_path)
-                    self.logger.info(f"Scaled image saved to: {scaled_image_path}")
             else:
                 scaled_image = image
-            
-            # Convert PIL image to numpy array for EasyOCR
+
             image_array = np.array(scaled_image)
-            
-            # Perform OCR on the numpy array
-            results = self.ocr_reader.readtext(image_array, decoder='beamsearch')
-            
-            # Filter results by confidence threshold and scale bounding boxes back to original size
+            # paragraph=False keeps more granular text; detail=1 returns boxes
+            results = self.ocr_reader.readtext(
+                image_array,
+                decoder="beamsearch",
+                paragraph=False,
+                min_size=8,
+            )
+
             filtered_results = []
             for bbox, text, conf in results:
-                if conf >= confidence_threshold:
-                    # Scale bounding box coordinates back to original image size
-                    if scale_factor != 1.0:
-                        scaled_bbox = []
-                        for point in bbox:
-                            scaled_point = (int(point[0] / scale_factor), int(point[1] / scale_factor))
-                            scaled_bbox.append(scaled_point)
-                        bbox = scaled_bbox
-                    
-                    filtered_results.append({
-                        'text': text,
-                        'bbox': bbox,
-                        'confidence': conf
-                    })
-            
-            self.logger.info(f"OCR completed: {len(filtered_results)} text regions detected")
+                cleaned = (text or "").strip()
+                if not cleaned or conf < confidence_threshold:
+                    continue
+                if scale_factor != 1.0:
+                    scaled_bbox = [
+                        (int(point[0] / scale_factor), int(point[1] / scale_factor))
+                        for point in bbox
+                    ]
+                    bbox = scaled_bbox
+                filtered_results.append({
+                    "text": cleaned,
+                    "bbox": bbox,
+                    "confidence": float(conf),
+                })
+
+            # Reading order: top-to-bottom, then left-to-right
+            def sort_key(item: Dict):
+                box = item["bbox"]
+                ys = [p[1] for p in box]
+                xs = [p[0] for p in box]
+                return (min(ys), min(xs))
+
+            filtered_results.sort(key=sort_key)
+            self.logger.info(f"OCR completed: {len(filtered_results)} text regions")
             return filtered_results
-            
         except Exception as e:
             self.logger.error(f"Failed to perform OCR: {e}")
             return []
-    
+
     def generate_caption(self, image: Image.Image) -> Optional[str]:
-        """
-        Generate a caption for the given image.
-        
-        Args:
-            image: PIL Image object
-            
-        Returns:
-            Generated caption string or None if failed
-        """
         if self.processor is None or self.model is None:
-            self.logger.error("Image captioning model not initialized")
             return None
-        
         try:
-            # Convert image to RGB if needed
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # Process image and generate a more detailed caption for screen-share use
-            prompt = "a detailed description of what is visible on this computer screen"
-            inputs = self.processor(image, prompt, return_tensors="pt")
-            if self.device == 'cuda' and torch.cuda.is_available():
-                inputs = {k: v.to('cuda') for k, v in inputs.items()}
-            
-            with torch.no_grad():
-                out = self.model.generate(**inputs, max_new_tokens=64)
-            
+            # Caption on a smaller image — enough for UI overview, much faster
+            caption_image = self.resize_image(image, 640)
+            if caption_image.mode != "RGB":
+                caption_image = caption_image.convert("RGB")
+
+            prompt = "a screenshot showing"
+            inputs = self.processor(caption_image, prompt, return_tensors="pt")
+            if self.device == "cuda":
+                inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+            with torch.inference_mode():
+                out = self.model.generate(**inputs, max_new_tokens=40)
+
             caption = self.processor.decode(out[0], skip_special_tokens=True)
-            # BLIP often echoes the prompt; strip it if present.
             if caption.lower().startswith(prompt.lower()):
                 caption = caption[len(prompt):].strip(" :,-")
-            
-            self.logger.info(f"Caption generated: {caption}")
-            return caption
-            
+            return caption or None
         except Exception as e:
             self.logger.error(f"Failed to generate caption: {e}")
             return None
-    
-    def process_screen(self, monitor_index: int = 0, save_screenshot: bool = False, 
-                      screenshot_path: str = None, confidence_threshold: float = 0.5, 
-                      ocr_scale_factor: float = 0.5, skip_ocr: bool = False) -> Dict:
+
+    def get_detected_text(self, ocr_results: List[Dict], max_chars: int = MAX_OCR_CHARS) -> str:
+        if not ocr_results:
+            return ""
+
+        lines: List[str] = []
+        current_line: List[str] = []
+        last_y = None
+        line_threshold = 18
+
+        for item in ocr_results:
+            text = item.get("text", "").strip()
+            if not text:
+                continue
+            box = item.get("bbox") or [[0, 0]]
+            y = min(p[1] for p in box)
+            if last_y is None or abs(y - last_y) <= line_threshold:
+                current_line.append(text)
+            else:
+                if current_line:
+                    lines.append(" ".join(current_line))
+                current_line = [text]
+            last_y = y
+        if current_line:
+            lines.append(" ".join(current_line))
+
+        # Deduplicate consecutive identical lines
+        deduped: List[str] = []
+        for line in lines:
+            if not deduped or deduped[-1] != line:
+                deduped.append(line)
+
+        joined = "\n".join(deduped)
+        if len(joined) <= max_chars:
+            return joined
+        return joined[: max_chars - 20].rstrip() + "\n…[truncated]"
+
+    def process_screen(
+        self,
+        monitor_index: int = 1,
+        save_screenshot: bool = False,
+        screenshot_path: str = None,
+        confidence_threshold: float = 0.35,
+        ocr_scale_factor: float = DEFAULT_OCR_SCALE,
+        skip_ocr: bool = False,
+        skip_caption: bool = True,
+        mode: str = "rich",
+        force: bool = False,
+        jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+        preview_max_width: int = DEFAULT_PREVIEW_MAX_WIDTH,
+        llm_image_max_width: int = DEFAULT_LLM_IMAGE_MAX_WIDTH,
+    ) -> Dict:
         """
-        Complete screen processing: capture screenshot, perform OCR, and generate caption.
-        
-        Args:
-            monitor_index: Index of the monitor to capture
-            save_screenshot: Whether to save the screenshot
-            screenshot_path: Path to save screenshot if save_screenshot is True
-            confidence_threshold: Minimum confidence for OCR
-            ocr_scale_factor: Factor to scale down image for OCR processing (0.5 = half size)
-            skip_ocr: Whether to skip OCR processing and only generate caption
-            
-        Returns:
-            Dictionary containing screenshot, OCR results, and caption
+        mode:
+          - fast: capture + preview encode; reuse OCR/caption if unchanged
+          - rich: OCR-first analysis (preference B), optional caption
+          - auto: rich when changed/forced, otherwise cached fast response
         """
+        started = time.perf_counter()
+        mode = (mode or "rich").lower()
+        if mode not in ("fast", "rich", "auto"):
+            mode = "rich"
+
         result = {
-            'screenshot': None,
-            'ocr_results': [],
-            'caption': None,
-            'success': False
+            "screenshot": None,
+            "ocr_results": [],
+            "caption": None,
+            "success": False,
+            "unchanged": False,
+            "mode": mode,
+            "image_jpeg": "",
+            "image_llm_jpeg": "",
+            "extracted_text": "",
+            "duration_ms": 0,
         }
-        
-        if not save_screenshot:
-            screenshot_path = None
-        else:
-            screenshot_path = os.path.join(os.path.dirname(__file__), "screen.png")
-        screenshot = self.capture_screenshot(monitor_index, screenshot_path)
-        
+
+        if save_screenshot and not screenshot_path:
+            screenshot_path = os.path.join(os.path.dirname(__file__), "screen.jpg")
+
+        screenshot = self.capture_screenshot(monitor_index, screenshot_path if save_screenshot else None)
         if screenshot is None:
-            self.logger.error("Failed to capture screenshot")
             return result
-        
-        result['screenshot'] = screenshot
-        
-        # Perform OCR unless skipped
-        if not skip_ocr:
-            # Create path for scaled image if screenshot is being saved
-            scaled_image_path = None
-            if save_screenshot and screenshot_path:
-                # Create a scaled version filename
-                base_name, ext = os.path.splitext(screenshot_path)
-                scaled_image_path = f"{base_name}_scaled{ext}"
-            
-            # Perform OCR with scaled image for faster processing
-            ocr_results = self.perform_ocr(screenshot, confidence_threshold, ocr_scale_factor, 
-                                         save_scaled_image=save_screenshot, scaled_image_path=scaled_image_path)
-            result['ocr_results'] = ocr_results
-        else:
-            # Skip OCR processing - return empty results
-            result['ocr_results'] = []
-            self.logger.info("OCR processing skipped")
-        
-        # Generate caption
-        caption = self.generate_caption(screenshot)
-        result['caption'] = caption
-        
-        result['success'] = True
-        self.logger.info("Screen processing completed successfully")
-        
+
+        result["screenshot"] = screenshot
+        image_hash = self._hash_image(screenshot)
+        changed = force or self.has_significant_change(screenshot, monitor_index)
+
+        # Fast path / unchanged: return cached analysis quickly
+        if mode in ("fast", "auto") and not changed and self._cached_result is not None:
+            cached = self._cached_result
+            result.update({
+                "ocr_results": cached.get("ocr_results", []),
+                "caption": cached.get("caption"),
+                "extracted_text": cached.get("extracted_text", ""),
+                "image_jpeg": self.encode_jpeg_base64(screenshot, jpeg_quality, preview_max_width),
+                "image_llm_jpeg": cached.get("image_llm_jpeg") or self.encode_jpeg_base64(
+                    screenshot, jpeg_quality, llm_image_max_width
+                ),
+                "unchanged": True,
+                "success": True,
+                "mode": "cache",
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            })
+            return result
+
+        run_ocr = not skip_ocr and mode in ("rich", "auto")
+        run_caption = not skip_caption and mode in ("rich", "auto")
+        # Preference B: in auto mode prioritize OCR; caption only occasionally via skip_caption=false
+
+        if mode == "fast":
+            run_ocr = False
+            run_caption = False
+
+        ocr_results: List[Dict] = []
+        if run_ocr:
+            ocr_results = self.perform_ocr(
+                screenshot,
+                confidence_threshold=confidence_threshold,
+                scale_factor=ocr_scale_factor,
+            )
+        elif self._cached_result and not changed:
+            ocr_results = self._cached_result.get("ocr_results", [])
+
+        caption = None
+        if run_caption:
+            caption = self.generate_caption(screenshot)
+        elif self._cached_result and not changed:
+            caption = self._cached_result.get("caption")
+
+        extracted_text = self.get_detected_text(ocr_results)
+        image_jpeg = self.encode_jpeg_base64(screenshot, jpeg_quality, preview_max_width)
+        image_llm_jpeg = self.encode_jpeg_base64(screenshot, jpeg_quality, llm_image_max_width)
+
+        result.update({
+            "ocr_results": ocr_results,
+            "caption": caption,
+            "extracted_text": extracted_text,
+            "image_jpeg": image_jpeg,
+            "image_llm_jpeg": image_llm_jpeg,
+            "unchanged": False,
+            "success": True,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        })
+
+        self._last_hash = image_hash
+        self._last_fingerprint = self._fingerprint(screenshot)
+        self._last_monitor = monitor_index
+        self._cached_result = {
+            "ocr_results": ocr_results,
+            "caption": caption,
+            "extracted_text": extracted_text,
+            "image_llm_jpeg": image_llm_jpeg,
+        }
+        self.logger.info(
+            f"Screen processed mode={result['mode']} changed={changed} "
+            f"ocr={len(ocr_results)} duration={result['duration_ms']}ms"
+        )
         return result
-    
-    def get_detected_text(self, ocr_results: List[Dict]) -> str:
-        """
-        Extract all detected text from OCR results.
-        
-        Args:
-            ocr_results: List of OCR result dictionaries
-            
-        Returns:
-            Combined text string
-        """
-        return ' '.join([result['text'] for result in ocr_results])
-    
-    def get_text_with_positions(self, ocr_results: List[Dict]) -> List[Tuple[str, Tuple]]:
-        """
-        Get text with their bounding box positions.
-        
-        Args:
-            ocr_results: List of OCR result dictionaries
-            
-        Returns:
-            List of tuples containing (text, bbox)
-        """
-        return [(result['text'], result['bbox']) for result in ocr_results]
 
 
-# Example usage
 if __name__ == "__main__":
-    import time
-    start_time = time.time()
-    # Initialize vision input
     vision_input = VisionInput()
     monitors = vision_input.get_monitors()
     logger.info(f"Monitors: {monitors}")
-    
-    logger.info(f"Vision input initialized in {time.time() - start_time} seconds")
-    start_time = time.time()
-    
-    # Process screen with scaled OCR for faster processing
-    result = vision_input.process_screen(
-        monitor_index=2,
-        save_screenshot=True,
-        confidence_threshold=0.5,
-        ocr_scale_factor=0.5  # Scale image to 50% for faster OCR
-    )
-
-    logger.info(f"Screen processed in {time.time() - start_time} seconds")
-    
-    if result['success']:
-        logger.info("Screenshot captured successfully")
-        logger.info(f"Detected text: {vision_input.get_detected_text(result['ocr_results'])}")
-        logger.info(f"Image caption: {result['caption']}")
-    else:
-        logger.info("Failed to process screen")
+    result = vision_input.process_screen(monitor_index=1, mode="rich", skip_caption=True)
+    logger.info(f"Success={result['success']} duration={result['duration_ms']}ms")
+    logger.info(f"Text: {result['extracted_text'][:300]}")

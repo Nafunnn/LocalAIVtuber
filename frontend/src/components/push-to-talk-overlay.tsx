@@ -3,7 +3,7 @@ import { Mic } from "lucide-react";
 import { voiceInputManager, type VoiceInputState } from "@/lib/voiceInputManager";
 import { pushToTalkController } from "@/lib/pushToTalk";
 import { useSettings } from "@/context/SettingsContext";
-import { chatManager } from "@/lib/chatManager";
+import { chatManager, ChatManager } from "@/lib/chatManager";
 import { ttsManager } from "@/lib/ttsManager";
 
 export function PushToTalkOverlay() {
@@ -25,6 +25,13 @@ export function PushToTalkOverlay() {
     if (typeof settings["llm.enableMemoryRetrieval"] === "boolean") {
       chatManager.setEnableMemoryRetrieval(settings["llm.enableMemoryRetrieval"]);
     }
+    const modelId = typeof settings["llm.ollama.model"] === "string"
+      ? settings["llm.ollama.model"]
+      : "";
+    chatManager.setVisionModelHint(
+      settings["llm.provider"] === "ollama_cloud" &&
+        ChatManager.modelLooksMultimodal(modelId)
+    );
   }, [settings]);
 
   useEffect(() => {

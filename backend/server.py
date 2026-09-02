@@ -89,7 +89,7 @@ llm:LLM = LLM()
 memory:Memory = Memory()
 history_store:HistoryStore = HistoryStore()
 tts:TTS = TTS()
-vision_input:VisionInput = VisionInput()
+vision_input:VisionInput = VisionInput(device="auto")
 character_manager:CharacterManager = CharacterManager()
 startup_progress.complete_step(f"AI Services loaded in {time.time() - start_time:.2f}s")
 
@@ -196,99 +196,125 @@ async def get_monitor_info():
             content={"error": f"Failed to get monitor info: {str(e)}"}
         )
 
-async def process_screenshot_async(monitor_index: int, ocr_scale_factor: float, skip_ocr: bool = False):
+async def process_screenshot_async(
+    monitor_index: int,
+    ocr_scale_factor: float,
+    skip_ocr: bool = False,
+    skip_caption: bool = True,
+    mode: str = "rich",
+    force: bool = False,
+    jpeg_quality: int = 72,
+    preview_max_width: int = 1280,
+    llm_image_max_width: int = 1024,
+):
     """
     Async wrapper for screenshot processing to avoid blocking the event loop.
     """
     import asyncio
     loop = asyncio.get_event_loop()
-    
-    # Run the synchronous screenshot processing in a thread pool
+
     result = await loop.run_in_executor(
         None,
         lambda: vision_input.process_screen(
             monitor_index=monitor_index,
             save_screenshot=False,
-            confidence_threshold=0.5,
+            confidence_threshold=0.35,
             ocr_scale_factor=ocr_scale_factor,
-            skip_ocr=skip_ocr
+            skip_ocr=skip_ocr,
+            skip_caption=skip_caption,
+            mode=mode,
+            force=force,
+            jpeg_quality=jpeg_quality,
+            preview_max_width=preview_max_width,
+            llm_image_max_width=llm_image_max_width,
         )
     )
-    
     return result
 
 @app.get("/api/screenshot")
-async def get_screenshot(monitor_index: int = 1, ocr_scale_factor: float = 0.5, skip_ocr: bool = False):
+async def get_screenshot(
+    monitor_index: int = 1,
+    ocr_scale_factor: float = 0.65,
+    skip_ocr: bool = False,
+    skip_caption: bool = True,
+    mode: str = "auto",
+    force: bool = False,
+    jpeg_quality: int = 72,
+    preview_max_width: int = 1280,
+    llm_image_max_width: int = 1024,
+):
     """
-    Capture a screenshot and return the image, caption, and extracted text.
-    
-    Args:
-        monitor_index: Index of the monitor to capture
-        ocr_scale_factor: Factor to scale down image for OCR processing (0.1 to 1.0)
-        skip_ocr: Whether to skip OCR processing and only generate caption
+    Capture a screenshot with OCR-first analysis.
+
+    mode=auto  -> OCR when screen changes, otherwise return cache quickly
+    mode=rich  -> force OCR (+ optional caption)
+    mode=fast  -> preview only / reuse cache
     """
     try:
-        logger.info(f"Screenshot request for monitor index: {monitor_index}, scale factor: {ocr_scale_factor}, skip OCR: {skip_ocr}")
-        
-        # Validate scale factor
+        logger.info(
+            f"Screenshot request monitor={monitor_index} scale={ocr_scale_factor} "
+            f"skip_ocr={skip_ocr} skip_caption={skip_caption} mode={mode} force={force}"
+        )
+
         if ocr_scale_factor < 0.1 or ocr_scale_factor > 1.0:
             return JSONResponse(
                 status_code=400,
                 content={"error": "OCR scale factor must be between 0.1 and 1.0"}
             )
-        
-        # Process screen asynchronously using asyncio.create_task
-        task = asyncio.create_task(process_screenshot_async(monitor_index, ocr_scale_factor, skip_ocr))
-        result = await task
-        
-        if not result['success']:
+
+        result = await process_screenshot_async(
+            monitor_index=monitor_index,
+            ocr_scale_factor=ocr_scale_factor,
+            skip_ocr=skip_ocr,
+            skip_caption=skip_caption,
+            mode=mode,
+            force=force,
+            jpeg_quality=jpeg_quality,
+            preview_max_width=preview_max_width,
+            llm_image_max_width=llm_image_max_width,
+        )
+
+        if not result.get("success"):
             return JSONResponse(
-                status_code=500, 
+                status_code=500,
                 content={"error": "Failed to capture screenshot"}
             )
-        
-        # Convert screenshot to base64 for JSON response
-        import io
-        import base64
-        img_byte_arr = io.BytesIO()
-        result['screenshot'].save(img_byte_arr, format='PNG')
-        img_byte_arr.seek(0)
-        image_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
-        
-        # Extract all detected text
-        detected_text = vision_input.get_detected_text(result['ocr_results'])
-        
-        # Convert numpy types to native Python types for JSON serialization
+
         def convert_numpy_types(obj):
-            if hasattr(obj, 'item'):  # numpy scalar
+            if hasattr(obj, "item"):
                 return obj.item()
-            elif isinstance(obj, (list, tuple)):
+            if isinstance(obj, (list, tuple)):
                 return [convert_numpy_types(item) for item in obj]
-            elif isinstance(obj, dict):
+            if isinstance(obj, dict):
                 return {key: convert_numpy_types(value) for key, value in obj.items()}
             return obj
-        
-        # Convert OCR results to ensure JSON serialization
-        converted_ocr_results = convert_numpy_types(result['ocr_results'])
-        
-        # Return JSON response with all data
+
+        converted_ocr_results = convert_numpy_types(result.get("ocr_results", []))
+        image_b64 = result.get("image_jpeg") or ""
+        image_llm_b64 = result.get("image_llm_jpeg") or image_b64
+
         return JSONResponse(
             status_code=200,
             content={
                 "success": True,
-                "image": image_base64,
-                "caption": result['caption'] or "",
-                "extracted_text": detected_text,
-                "ocr_count": len(result['ocr_results']),
-                "ocr_results": converted_ocr_results,  # Converted OCR data
-                "ocr_scale_factor": ocr_scale_factor
+                "image": image_b64,
+                "image_llm": image_llm_b64,
+                "mime": "image/jpeg",
+                "caption": result.get("caption") or "",
+                "extracted_text": result.get("extracted_text") or "",
+                "ocr_count": len(result.get("ocr_results") or []),
+                "ocr_results": converted_ocr_results,
+                "ocr_scale_factor": ocr_scale_factor,
+                "unchanged": bool(result.get("unchanged")),
+                "mode": result.get("mode"),
+                "duration_ms": result.get("duration_ms", 0),
             }
         )
-        
+
     except Exception as e:
         logger.error(f"Error capturing screenshot: {e}, {traceback.format_exc()}")
         return JSONResponse(
-            status_code=500, 
+            status_code=500,
             content={"error": f"Failed to capture screenshot: {str(e)}"}
         )
 

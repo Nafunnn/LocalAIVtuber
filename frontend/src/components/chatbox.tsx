@@ -5,7 +5,7 @@ import { Send, Square, Plus, MoreHorizontal, Edit, Trash2 } from 'lucide-react';
 import { useSettings } from '@/context/SettingsContext';
 import EditableChatHistory from './editable-chat-history';
 import { HistoryItem } from '@/lib/types';
-import { chatManager } from '@/lib/chatManager';
+import { chatManager, ChatManager } from '@/lib/chatManager';
 import { fetchSessions, createNewSession, deleteSession, updateSessionTitle } from '@/lib/sessionManager';
 import { Session } from '@/lib/types';
 import { SidePanel } from './side-panel';
@@ -107,6 +107,16 @@ const Chatbox = () => {
     useEffect(() => {
         chatManager.setEnableMemoryRetrieval(settings["llm.enableMemoryRetrieval"] ?? true);
     }, [settings["llm.enableMemoryRetrieval"]]);
+
+    useEffect(() => {
+        const modelId = typeof settings["llm.ollama.model"] === "string"
+            ? settings["llm.ollama.model"]
+            : "";
+        chatManager.setVisionModelHint(
+            settings["llm.provider"] === "ollama_cloud" &&
+                ChatManager.modelLooksMultimodal(modelId)
+        );
+    }, [settings["llm.provider"], settings["llm.ollama.model"]]);
 
     useEffect(() => {
         const fetchSessionList = async () => {

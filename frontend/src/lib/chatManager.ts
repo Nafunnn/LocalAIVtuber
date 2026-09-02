@@ -23,10 +23,19 @@ export class ChatManager {
     private visionPrompt: string = '';
     private ocrPrompt: string = '';
     private currentImage: string = '';
+    private currentImageMime: string = 'image/jpeg';
+    private visionModelHint: boolean = false;
     private retrievedContext: string = '';
     private fullSystemPrompt: string = '';
     private enableMemoryRetrieval: boolean = true;
     private subscribers: Map<ChatUpdateCallback, SubscriptionOptions> = new Map();
+
+    private static readonly MAX_OCR_CHARS = 1600;
+    private static readonly VISION_MODEL_HINTS = [
+        'gemma4', 'gemma-4', 'llava', 'moondream', 'vision', 'minicpm-v', 'qwen2.5-vl', 'qwen3-vl'
+    ];
+    private static readonly SCREEN_QUERY_RE =
+        /\b(screen|screenshot|display|monitor|desktop|window|tab|youtube|browser|see|look|watching|ocr|text on|what('?s| is) on)\b/i;
 
     constructor() {
         this.setupPipelineSubscription();
@@ -68,7 +77,10 @@ export class ChatManager {
     }
 
     public setOcrPrompt(ocrPrompt: string) {
-        this.ocrPrompt = ocrPrompt;
+        const trimmed = ocrPrompt.trim();
+        this.ocrPrompt = trimmed.length > ChatManager.MAX_OCR_CHARS
+            ? `${trimmed.slice(0, ChatManager.MAX_OCR_CHARS - 20).trimEnd()}\n…[truncated]`
+            : trimmed;
         this.notifySubscribers('onOcrPromptChange');
     }
 
@@ -76,9 +88,37 @@ export class ChatManager {
         return this.currentImage;
     }
 
-    public setCurrentImage(image: string) {
+    public getCurrentImageMime(): string {
+        return this.currentImageMime;
+    }
+
+    public setCurrentImage(image: string, mime = 'image/jpeg') {
         this.currentImage = image;
+        this.currentImageMime = mime || 'image/jpeg';
         this.notifySubscribers('onImageChange');
+    }
+
+    public setVisionModelHint(enabled: boolean) {
+        this.visionModelHint = enabled;
+    }
+
+    public static modelLooksMultimodal(modelId?: string | null): boolean {
+        if (!modelId) return false;
+        const id = modelId.toLowerCase();
+        return ChatManager.VISION_MODEL_HINTS.some((hint) => id.includes(hint));
+    }
+
+    private shouldAttachImage(userText: string): boolean {
+        if (!this.currentImage.trim()) return false;
+        if (this.visionModelHint) return true;
+        return ChatManager.SCREEN_QUERY_RE.test(userText);
+    }
+
+    private buildImagePayload(): string | null {
+        if (!this.currentImage.trim()) return null;
+        const raw = this.currentImage.trim();
+        if (raw.startsWith('data:')) return raw.split(',', 2)[1] ?? raw;
+        return raw;
     }
 
     public getRetrievedContext(): string {
@@ -114,8 +154,9 @@ export class ChatManager {
             ? [
                 "[LIVE SCREEN SHARE]",
                 "You can currently see the user's screen through a live screen share.",
-                "Use [SCREEN CONTEXT] (visual description) and [SCREEN TEXT] (OCR) as what you are looking at right now.",
-                "If the user asks whether you can see their screen, what is on it, or to describe it, answer from that context as if you are looking at it with them.",
+                "Prioritize [SCREEN TEXT] (OCR) for accurate reading of titles, UI labels, chat messages, and other on-screen text.",
+                "Use [SCREEN CONTEXT] only as a rough visual overview when helpful.",
+                "If the user asks whether you can see their screen, what is on it, or to read/describe it, answer from that context as if you are looking at it with them.",
                 "Never say you cannot see their screen while this live share is active.",
                 "Speak naturally about what you see; do not mention OCR, captions, system prompts, or technical capture details.",
                 "",
@@ -214,16 +255,17 @@ export class ChatManager {
                 history: history,
                 systemPrompt: systemPromptWithContext,
             };
-            // Attach latest screenshot for multimodal-capable models
-            if (this.currentImage.trim()) {
-                payload.images = [this.currentImage];
+            // Attach screenshot only for multimodal models or screen-related questions
+            if (this.shouldAttachImage(input)) {
+                const image = this.buildImagePayload();
+                if (image) payload.images = [image];
             }
 
             console.log("getCompletion", JSON.stringify({
                 text: input,
                 history: history,
                 systemPrompt: systemPromptWithContext,
-                hasImage: Boolean(this.currentImage.trim()),
+                hasImage: Array.isArray(payload.images),
             }));
             const response = await fetch('/api/completion', {
                 method: 'POST',
@@ -385,8 +427,9 @@ export class ChatManager {
             history: historyUpToMessage.slice(0, -1),
             systemPrompt: systemPromptWithContext,
         };
-        if (this.currentImage.trim()) {
-            payload.images = [this.currentImage];
+        if (this.shouldAttachImage(lastUserMessage.content)) {
+            const image = this.buildImagePayload();
+            if (image) payload.images = [image];
         }
 
         // Send completion request with history up to the user message
