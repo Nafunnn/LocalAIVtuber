@@ -8,7 +8,7 @@
     "llm.min_p": 0.05,
     "llm.repeat_penalty": 1.1,
     "llm.seed": -1,
-    "llm.showMonitor": true,
+    "llm.showMonitor": false,
     "llm.enableMemoryRetrieval": true,
     "tts.provider": "gpt-sovits",
     "tts.voice": "leaf",
@@ -19,9 +19,10 @@
     "frontend.character.live2D.xPosition": 50,
     "frontend.character.live2D.yPosition": 100,
     "frontend.character.live2D.scale": 0.3,
-    "input.microphone.device": 9,
+    "input.microphone.device": 8,
     "input.language": "en",
     "input.camera.deviceId": "a4a34ff56d3d397e41c8c3a245c241590d6f205fd25cd33794509e7566aa2598",
+    "mcp.spotify.enabled": true,
     "frontend.character.selectedLive2DModel": "/api/character/files/live2D/models/akari_vts/akari.model3.json",
-    "input.camera.enabled": true
+    "input.camera.enabled": false
 }

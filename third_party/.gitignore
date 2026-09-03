@@ -1,0 +1,3 @@
+# Spotify MCP secrets and local install artifacts
+spotify-mcp-server/spotify-config.json
+spotify-mcp-server/node_modules/

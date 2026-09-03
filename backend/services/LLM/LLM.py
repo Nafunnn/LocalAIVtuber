@@ -20,6 +20,7 @@ class LLM:
         self.ollama_model = "gpt-oss:120b"
         self.ollama_base_url = "https://ollama.com"
         self.ollama_llm: OllamaCloudLLM | None = None
+        self.spotify_mcp_enabled = False
         
         # Default sampling parameters
         self.sampling_params = {
@@ -318,10 +319,27 @@ class LLM:
         self.sampling_params.update(params)
         logger.info(f"Updated sampling parameters: {self.sampling_params}")
 
+    def set_spotify_mcp_enabled(self, enabled: bool):
+        from services.MCP import spotify_mcp
+
+        self.spotify_mcp_enabled = bool(enabled)
+        spotify_mcp.set_enabled(self.spotify_mcp_enabled)
+
     def get_completion(self, text, history, system_prompt, screenshot=False, images=None):
         if self.provider == "ollama_cloud":
             if not self.ollama_llm:
                 self._ensure_ollama_client()
+            if self.spotify_mcp_enabled:
+                from services.MCP import SpotifyToolAgent, spotify_mcp
+
+                agent = SpotifyToolAgent(self.ollama_llm, spotify_mcp)
+                return agent.run(
+                    text,
+                    history,
+                    system_prompt,
+                    images=images,
+                    **self._get_sampling_kwargs(),
+                )
             return self.ollama_llm.get_chat_completion(
                 text,
                 history,

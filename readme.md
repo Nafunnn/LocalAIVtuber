@@ -135,6 +135,26 @@ Or set it permanently via System Environment Variables.
 
 TTS, vision (screen capture), memory, and voice input continue to run locally regardless of LLM provider.
 
+## Spotify MCP (optional)
+
+Let the VTuber AI control Spotify (search, play/pause, playlists, volume) via the vendored [spotify-mcp-server](https://github.com/marcelmarais/spotify-mcp-server).
+
+**Requires:** Node.js 16+, Spotify Premium, Ollama Cloud with a tool-capable model.
+
+```powershell
+# Install Python MCP client
+cd backend
+.\venv\Scripts\pip.exe install -r requirements.txt
+
+# Clone + build the Spotify MCP server
+cd ..
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-spotify-mcp.ps1
+```
+
+Then create a Spotify Developer app, fill `third_party/spotify-mcp-server/spotify-config.json`, run `npm run auth` in that folder, and enable **Spotify MCP** in Settings.
+
+Full walkthrough (including Cursor IDE MCP config): [docs/SPOTIFY_MCP.md](docs/SPOTIFY_MCP.md)
+
 ## FAQ
 ### nltk error
 <img width="449" height="142" alt="image" src="https://github.com/user-attachments/assets/04a80930-5da0-439f-b6c6-23f4b993a543" />

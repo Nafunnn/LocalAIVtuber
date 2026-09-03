@@ -143,6 +143,35 @@ class OllamaCloudLLM(BaseLLM):
                 return
             raise ValueError(f"Failed to connect to Ollama Cloud: {e}") from e
 
+    def chat_with_tools(
+        self,
+        messages: List[Dict],
+        tools: list,
+        options: dict | None = None,
+    ):
+        """Non-streaming chat that can return tool_calls (for agent loops)."""
+        client = self._get_client()
+        try:
+            response = client.chat(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                stream=False,
+                options=options or {},
+            )
+            return response
+        except ResponseError as e:
+            status = getattr(e, "status_code", None)
+            if status == 401:
+                raise ValueError("Invalid or missing Ollama API key") from e
+            if status == 404:
+                raise ValueError(f"Model '{self.model}' not found on Ollama Cloud") from e
+            raise ValueError(f"Ollama Cloud error: {e}") from e
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Failed to connect to Ollama Cloud: {e}") from e
+
     def get_chat_completion(
         self,
         text: str,

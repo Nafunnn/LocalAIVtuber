@@ -455,6 +455,11 @@ async def get_ollama_cloud_models():
 async def get_ollama_status():
     return JSONResponse(content=llm.validate_ollama_api_key())
 
+@app.get("/api/mcp/spotify/status")
+async def get_spotify_mcp_status():
+    from services.MCP import spotify_mcp
+    return JSONResponse(content=spotify_mcp.ping_tools())
+
 # *******************************
 # Model Download
 # *******************************
@@ -932,6 +937,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "input.microphone.device": None,
     "input.language": "en",
     "input.camera.deviceId": "",
+    "mcp.spotify.enabled": False,
 }
 
 class SettingsManager:
@@ -982,6 +988,8 @@ class SettingsManager:
                 voice_input.set_input_device(value)
             if key == "input.language":
                 voice_input.set_input_language(value)
+            if key == "mcp.spotify.enabled":
+                llm.set_spotify_mcp_enabled(bool(value))
         
         # Apply LLM sampling parameters
         llm_sampling_params = {}
