@@ -5,11 +5,33 @@ from __future__ import annotations
 from typing import Any, Dict, Generator, List, Optional
 
 from services.lib.LAV_logger import logger
-from .schemas import mcp_tools_to_ollama
+from .schemas import mcp_tools_to_ollama, normalize_tool_arguments
 from .spotify_client import SPOTIFY_SYSTEM_HINT, SpotifyMCPClient
 
 
 MAX_TOOL_ROUNDS = 8
+
+_MUSIC_INTENT_KEYWORDS = (
+    "spotify",
+    "play ",
+    "play\t",
+    "pause",
+    "skip",
+    "playlist",
+    "volume",
+    "song",
+    "music",
+    "track",
+    "queue",
+    "what's playing",
+    "what is playing",
+    "now playing",
+)
+
+
+def _looks_like_music_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(k in lowered for k in _MUSIC_INTENT_KEYWORDS)
 
 
 def _message_to_dict(message: Any) -> Dict[str, Any]:
@@ -122,8 +144,20 @@ class SpotifyToolAgent:
             text, history, augmented_system, images=images
         )
         options = self.ollama_llm._build_options(**sampling_params)
+        music_intent = _looks_like_music_request(text)
+        # Log once that schemas actually have properties (guards against empty schemas).
+        sample = next(
+            (t for t in ollama_tools if t["function"]["name"] == "searchSpotify"),
+            None,
+        )
+        if sample:
+            props = (sample["function"].get("parameters") or {}).get("properties") or {}
+            logger.info(
+                f"Spotify tool schemas ready (searchSpotify props={list(props.keys())})"
+            )
 
         final_content = ""
+        nudged_for_tools = False
         for round_idx in range(MAX_TOOL_ROUNDS):
             logger.info(
                 f"Spotify tool agent round {round_idx + 1}/{MAX_TOOL_ROUNDS} "
@@ -147,18 +181,37 @@ class SpotifyToolAgent:
                 break
 
             tool_calls = _extract_tool_calls(message)
-            messages.append(_message_to_dict(message))
+            msg_dict = _message_to_dict(message)
 
             if not tool_calls:
-                final_content = (
-                    getattr(message, "content", None)
-                    if not isinstance(message, dict)
-                    else message.get("content")
-                ) or ""
+                final_content = msg_dict.get("content") or ""
+                # Model skipped tools on a clear music request — nudge once.
+                if music_intent and not nudged_for_tools and round_idx == 0:
+                    nudged_for_tools = True
+                    logger.warning(
+                        "Music request but model returned no tool_calls; nudging once"
+                    )
+                    messages.append(msg_dict)
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You must use Spotify tools for this request. "
+                                "Call searchSpotify and/or playMusic (or the right "
+                                "playback tool) now. Do not pretend music is playing."
+                            ),
+                        }
+                    )
+                    final_content = ""
+                    continue
+                messages.append(msg_dict)
                 break
+
+            messages.append(msg_dict)
 
             for call in tool_calls:
                 name, arguments = _tool_call_parts(call)
+                arguments = normalize_tool_arguments(name, arguments)
                 if not name:
                     result_text = "Error: missing tool name"
                 else:
@@ -167,6 +220,8 @@ class SpotifyToolAgent:
                         result_text = self.mcp.call_tool(name, arguments)
                     except Exception as e:
                         result_text = f"Error calling {name}: {e}"
+                    preview = result_text.replace("\n", " ")[:240]
+                    logger.info(f"Spotify MCP result [{name}]: {preview}")
                 messages.append(
                     {
                         "role": "tool",

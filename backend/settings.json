@@ -19,7 +19,7 @@
     "frontend.character.live2D.xPosition": 50,
     "frontend.character.live2D.yPosition": 100,
     "frontend.character.live2D.scale": 0.3,
-    "input.microphone.device": 8,
+    "input.microphone.device": null,
     "input.language": "en",
     "input.camera.deviceId": "a4a34ff56d3d397e41c8c3a245c241590d6f205fd25cd33794509e7566aa2598",
     "mcp.spotify.enabled": true,

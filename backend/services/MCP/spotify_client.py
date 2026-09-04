@@ -21,10 +21,13 @@ DEFAULT_INDEX_JS = os.path.join(DEFAULT_SERVER_DIR, "build", "index.js")
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_SERVER_DIR, "spotify-config.json")
 
 SPOTIFY_SYSTEM_HINT = (
-    "You can control the user's Spotify with tools (search, play/pause/skip, playlists, "
-    "queue, volume, liked songs). Use tools when they ask about music. After tools finish, "
-    "reply briefly and naturally in character—do not narrate raw JSON or tool names. "
-    "Playback may require Spotify Premium and an open Spotify app/device."
+    "Spotify tools are available and MUST be used for any music request "
+    "(play, pause, skip, search, playlist, volume, queue, what's playing). "
+    "Never claim you played or changed music unless a tool succeeded. "
+    "Typical play flow: searchSpotify(query, type=\"track\") then playMusic with the track uri/id. "
+    "For searchSpotify the parameter is named query (not q). "
+    "After tools finish, reply briefly and naturally in character—do not narrate JSON or tool names. "
+    "If a tool errors (no device, auth, etc.), say that honestly in character."
 )
 
 

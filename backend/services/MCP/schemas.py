@@ -5,24 +5,45 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 
+def _get_input_schema(tool: Any) -> Dict[str, Any] | None:
+    """Read JSON schema from MCP Tool (SDK v1 camelCase or v2 snake_case)."""
+    for attr in ("input_schema", "inputSchema"):
+        value = getattr(tool, attr, None)
+        if isinstance(value, dict):
+            return value
+    if isinstance(tool, dict):
+        for key in ("input_schema", "inputSchema"):
+            value = tool.get(key)
+            if isinstance(value, dict):
+                return value
+    if hasattr(tool, "model_dump"):
+        dumped = tool.model_dump()
+        for key in ("input_schema", "inputSchema"):
+            value = dumped.get(key)
+            if isinstance(value, dict):
+                return value
+    return None
+
+
 def mcp_tools_to_ollama(tools: List[Any]) -> List[Dict[str, Any]]:
     """Map MCP list_tools() entries to Ollama chat `tools` JSON schemas."""
     ollama_tools: List[Dict[str, Any]] = []
     for tool in tools:
-        name = getattr(tool, "name", None) or tool.get("name")
+        name = getattr(tool, "name", None)
+        if not name and isinstance(tool, dict):
+            name = tool.get("name")
         description = getattr(tool, "description", None)
         if description is None and isinstance(tool, dict):
             description = tool.get("description")
-        input_schema = getattr(tool, "inputSchema", None)
-        if input_schema is None and isinstance(tool, dict):
-            input_schema = tool.get("inputSchema") or tool.get("input_schema")
+        input_schema = _get_input_schema(tool)
         if not name:
             continue
-        parameters: Dict[str, Any]
         if isinstance(input_schema, dict):
             parameters = dict(input_schema)
         else:
             parameters = {"type": "object", "properties": {}}
+        # Ollama expects a plain JSON Schema object; drop draft metadata noise.
+        parameters.pop("$schema", None)
         if "type" not in parameters:
             parameters["type"] = "object"
         if "properties" not in parameters:
@@ -40,14 +61,35 @@ def mcp_tools_to_ollama(tools: List[Any]) -> List[Dict[str, Any]]:
     return ollama_tools
 
 
+def normalize_tool_arguments(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Fix common model mistakes in Spotify tool args."""
+    args = dict(arguments or {})
+    if name == "searchSpotify":
+        if "query" not in args and "q" in args:
+            args["query"] = args.pop("q")
+        if "type" not in args:
+            args["type"] = "track"
+    if name == "playMusic":
+        # Prefer uri when both present; leave as-is otherwise.
+        if "uri" not in args and args.get("id") and args.get("type"):
+            pass
+        if "uri" not in args and "trackUri" in args:
+            args["uri"] = args.pop("trackUri")
+        if "uri" not in args and "spotify_uri" in args:
+            args["uri"] = args.pop("spotify_uri")
+    return args
+
+
 def tool_result_to_text(result: Any) -> str:
     """Flatten an MCP CallToolResult into a string for the LLM."""
     if result is None:
         return ""
-    if getattr(result, "isError", False):
-        prefix = "Error: "
-    else:
-        prefix = ""
+    is_error = bool(
+        getattr(result, "isError", None)
+        if getattr(result, "isError", None) is not None
+        else getattr(result, "is_error", False)
+    )
+    prefix = "Error: " if is_error else ""
     content = getattr(result, "content", None)
     if content is None:
         return prefix + str(result)
