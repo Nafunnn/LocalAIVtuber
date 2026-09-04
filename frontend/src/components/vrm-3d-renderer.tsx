@@ -1,29 +1,54 @@
-import React, { useEffect, useRef} from 'react';
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
-import { createVRMAnimationClip, VRMAnimationLoaderPlugin, VRMLookAtQuaternionProxy } from '@pixiv/three-vrm-animation';
-import { VRM } from '@pixiv/three-vrm';
-import { globalStateManager } from '@/lib/globalStateManager';
+import React, { useEffect, useRef } from "react";
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import {
+  createVRMAnimationClip,
+  VRMAnimationLoaderPlugin,
+  VRMLookAtQuaternionProxy,
+} from "@pixiv/three-vrm-animation";
+import { VRM } from "@pixiv/three-vrm";
+import { globalStateManager } from "@/lib/globalStateManager";
+import { pipelineManager } from "@/lib/pipelineManager";
+import { chatManager } from "@/lib/chatManager";
+import {
+  IDLE_ANIMATION,
+  pickAmbientGesture,
+  pickGestureForMood,
+  pickGestureFromText,
+  pickGreetingGesture,
+} from "@/lib/vrmAnimationCatalog";
 
-// const CHARACTER_MODEL_PATH = "src/assets/VRM3D/models/生駒ミル_私服.vrm"
+const DEFAULT_CHARACTER_MODEL_PATH = "/resource/VRM3D/models/春日部つむぎハイパー.vrm";
 
-const DEFAULT_CHARACTER_MODEL_PATH = "/resource/VRM3D/models/春日部つむぎハイパー.vrm"
-const ANIMATIONS = {
-    DEFAULT: { idle: "/api/character/files/VRM3D/animations/idle.vrma", gestures: [] },
-}
+const AMBIENT_MIN_MS = 14000;
+const AMBIENT_MAX_MS = 28000;
+const SPEAK_GESTURE_CHANCE = 0.55;
 
 interface VRM3dCanvasProps {
-    modelPath?: string;
-    isActive?: boolean;
+  modelPath?: string;
+  isActive?: boolean;
 }
+
+enum AnimationType {
+  Idle,
+  Gesture,
+}
+
+type LoadAndPlayAnimationParams = {
+  filename: string;
+  animationType: AnimationType;
+  fadeDuration?: number;
+  override?: boolean;
+  overridable?: boolean;
+};
 
 const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   const vrmRef = useRef<VRM | null>(null);
-  const gltfLoaderRef = useRef<GLTFLoader>(new GLTFLoader());  // Ref for GLTFLoader
+  const gltfLoaderRef = useRef<GLTFLoader>(new GLTFLoader());
   const mainAnimationRef = useRef<THREE.AnimationAction | null>(null);
   const clockRef = useRef<THREE.Clock | null>(null);
 
@@ -32,52 +57,200 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
 
   const idleAnimationFileNameRef = useRef<string | null>(null);
   const lastPlayedGestureRef = useRef<THREE.AnimationAction | null>(null);
+  const lastGestureFileRef = useRef<string | null>(null);
+  const readyRef = useRef(false);
+  const greetedRef = useRef(false);
+  const lastAssistantLenRef = useRef(0);
+  const wasSpeakingRef = useRef(false);
+  const wasRecordingRef = useRef(false);
+  const wasThinkingRef = useRef(false);
 
-  const [isSpeaking, setIsSpeaking]  = React.useState(false);
-  const canClickRef = useRef<boolean>(true);
+  const [isSpeaking, setIsSpeaking] = React.useState(false);
+  const canClickRef = useRef(true);
 
-//   const [lastInteractionTime, setLastInteractionTime] = React.useState(Date.now());
-//   const idleTime = 30000;
-//   const canPlayIdleAnimRef = useRef<boolean>(true);
-
-  // scene objects
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
-  // constants
-  const companionModeCameraPositionRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 1.7, 2.2));
-  const companionModeCameraLookatRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 1.2, 0));
+  const companionModeCameraPositionRef = useRef(new THREE.Vector3(0, 1.7, 2.2));
+  const companionModeCameraLookatRef = useRef(new THREE.Vector3(0, 1.2, 0));
 
+  const loadAndPlayAnimation = async ({
+    filename,
+    animationType,
+    fadeDuration = 0.5,
+    override = false,
+    overridable = false,
+  }: LoadAndPlayAnimationParams) => {
+    if (!override && lastPlayedGestureRef.current?.isRunning()) return;
+    if (!mixerRef.current || !vrmRef.current) return;
 
-  // for playing idle animations
-//   useEffect(() => {
-//     const interval = setInterval(() => {
-//       if (Date.now() - lastInteractionTime >= idleTime) {
-//         const randIdx = Math.floor(Math.random() * ANIMATIONS.IDLE.gestures.length);
-//         if (canPlayIdleAnimRef.current) {
-//           loadAndPlayAnimation({ filename: ANIMATIONS.IDLE.gestures[randIdx], animationType: AnimationType.Gesture, overridable: true });
-//         }
-//       }
-//     }, 1000);
+    const fullPath = filename.startsWith("/api/character/files/")
+      ? filename
+      : `/api/character/files/VRM3D/animations/${filename}`;
 
-//     return () => clearInterval(interval);
-//     // eslint-disable-next-line react-hooks/exhaustive-deps
-//   }, [lastInteractionTime]);
+    try {
+      const gltfVrma = await gltfLoaderRef.current.loadAsync(fullPath);
+      const vrmAnimation = gltfVrma.userData.vrmAnimations?.[0];
+      if (!vrmAnimation) {
+        console.warn("No VRM animation in", fullPath);
+        return;
+      }
 
-  // for speak animation
+      const clip = createVRMAnimationClip(vrmAnimation, vrmRef.current);
+      const newAction = mixerRef.current.clipAction(clip);
+      newAction.clampWhenFinished = true;
+      lastGestureFileRef.current = fullPath;
+
+      const onAnimationFinish = () => {
+        mixerRef.current?.removeEventListener("finished", onAnimationFinish);
+        if (idleAnimationFileNameRef.current) {
+          void loadAndPlayAnimation({
+            filename: idleAnimationFileNameRef.current,
+            animationType: AnimationType.Idle,
+          });
+        }
+      };
+
+      if (animationType === AnimationType.Idle) {
+        idleAnimationFileNameRef.current = fullPath;
+        newAction.loop = THREE.LoopRepeat;
+        lastPlayedGestureRef.current = null;
+      } else {
+        if (!overridable) lastPlayedGestureRef.current = newAction;
+        newAction.loop = THREE.LoopOnce;
+        mixerRef.current.addEventListener("finished", onAnimationFinish);
+      }
+
+      if (mainAnimationRef.current) {
+        newAction.weight = 1;
+        newAction.reset().play();
+        mainAnimationRef.current.crossFadeTo(newAction, fadeDuration, true);
+      } else {
+        newAction.reset().play();
+      }
+      mainAnimationRef.current = newAction;
+    } catch (err) {
+      console.warn("Failed to play animation", fullPath, err);
+    }
+  };
+
+  const playGesture = (file: string | null, opts?: { override?: boolean; overridable?: boolean }) => {
+    if (!file || !readyRef.current) return;
+    void loadAndPlayAnimation({
+      filename: file,
+      animationType: AnimationType.Gesture,
+      override: opts?.override ?? false,
+      overridable: opts?.overridable ?? false,
+    });
+  };
+
   useEffect(() => {
     if (isSpeaking) {
-      speakAnimationRef.current?.play();
+      speakAnimationRef.current?.reset().play();
     } else {
       speakAnimationRef.current?.stop();
     }
   }, [isSpeaking]);
 
-  // Initialization
+  // Ambient + AI-driven gestures
+  useEffect(() => {
+    let ambientTimer: number | null = null;
+
+    const scheduleAmbient = () => {
+      if (ambientTimer) window.clearTimeout(ambientTimer);
+      const delay = AMBIENT_MIN_MS + Math.random() * (AMBIENT_MAX_MS - AMBIENT_MIN_MS);
+      ambientTimer = window.setTimeout(() => {
+        if (
+          readyRef.current &&
+          !lastPlayedGestureRef.current?.isRunning() &&
+          globalStateManager.getState("ttsLiveVolume") <= 0.1 &&
+          !globalStateManager.getState("isVoiceRecording")
+        ) {
+          playGesture(pickAmbientGesture(lastGestureFileRef.current), { overridable: true });
+        }
+        scheduleAmbient();
+      }, delay);
+    };
+
+    scheduleAmbient();
+
+    const unsubVoice = globalStateManager.subscribe("isVoiceRecording", (recording) => {
+      if (recording && !wasRecordingRef.current) {
+        playGesture(pickGestureForMood("listen", lastGestureFileRef.current), { override: true });
+      }
+      wasRecordingRef.current = recording;
+    });
+
+    const unsubPipe = pipelineManager.subscribe((tasks) => {
+      const active = tasks.find(
+        (t) => t.status !== "task_finished" && t.status !== "cancelled"
+      );
+      const thinking = active?.status === "llm_started";
+
+      if (thinking && !wasThinkingRef.current) {
+        playGesture(pickGestureForMood("think", lastGestureFileRef.current), {
+          override: false,
+          overridable: true,
+        });
+      }
+      wasThinkingRef.current = Boolean(thinking);
+    });
+
+    const unsubChat = chatManager.subscribe((messages) => {
+      const last = [...messages].reverse().find((m) => m.role === "assistant");
+      if (!last?.content) return;
+      const len = last.content.length;
+      // Fire when a new assistant reply starts streaming
+      if (len < lastAssistantLenRef.current) {
+        lastAssistantLenRef.current = len;
+        return;
+      }
+      if (lastAssistantLenRef.current === 0 && len > 0) {
+        if (!greetedRef.current) {
+          greetedRef.current = true;
+          playGesture(pickGreetingGesture(), { override: true });
+        } else {
+          const keyed = pickGestureFromText(last.content);
+          playGesture(
+            keyed ?? pickGestureForMood("speak", lastGestureFileRef.current),
+            { override: false, overridable: true }
+          );
+        }
+      } else if (len - lastAssistantLenRef.current > 40) {
+        // Mid-stream keyword check once enough text arrives
+        const keyed = pickGestureFromText(last.content);
+        if (keyed) playGesture(keyed, { overridable: true });
+      }
+      lastAssistantLenRef.current = len;
+    });
+
+    const volumePoll = window.setInterval(() => {
+      const speaking = globalStateManager.getState("ttsLiveVolume") > 0.1;
+      if (speaking && !wasSpeakingRef.current && Math.random() < SPEAK_GESTURE_CHANCE) {
+        const keyed =
+          pickGestureFromText(
+            [...chatManager.getMessages()].reverse().find((m) => m.role === "assistant")?.content ??
+              ""
+          ) ?? pickGestureForMood("speak", lastGestureFileRef.current);
+        playGesture(keyed, { overridable: true });
+      }
+      wasSpeakingRef.current = speaking;
+    }, 200);
+
+    return () => {
+      if (ambientTimer) window.clearTimeout(ambientTimer);
+      window.clearInterval(volumePoll);
+      unsubVoice();
+      unsubPipe();
+      unsubChat();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const scene = new THREE.Scene();
-    const mountNode = mountRef.current; // Copy the ref value to a local variable
+    const mountNode = mountRef.current;
 
     scene.background = new THREE.Color(0x000000);
 
@@ -89,9 +262,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
     );
     cameraRef.current = camera;
 
-    let parameters = null;
-    parameters = { antialias: true }
-    const renderer = new THREE.WebGLRenderer(parameters);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
     rendererRef.current = renderer;
 
     renderer.autoClear = false;
@@ -118,13 +289,15 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
     const initVRMScene = async () => {
       const gltfVrm = await gltfLoaderRef.current.loadAsync(modelPath || DEFAULT_CHARACTER_MODEL_PATH);
       const vrm: VRM = gltfVrm.userData.vrm;
-      vrmRef.current = vrm; // Store the VRM for future reference
+      vrmRef.current = vrm;
       VRMUtils.rotateVRM0(vrm);
       VRMUtils.removeUnnecessaryVertices(vrm.scene);
-      vrm.scene.traverse((obj: THREE.Object3D) => obj.frustumCulled = false);
-      if (!vrm.lookAt) return
+      vrm.scene.traverse((obj: THREE.Object3D) => {
+        obj.frustumCulled = false;
+      });
+      if (!vrm.lookAt) return;
       const lookAtQuatProxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
-      lookAtQuatProxy.name = 'lookAtQuaternionProxy';
+      lookAtQuatProxy.name = "lookAtQuaternionProxy";
       vrm.scene.add(lookAtQuatProxy);
       const lookAtTarget = new THREE.Object3D();
       camera.add(lookAtTarget);
@@ -136,42 +309,43 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
       vrm.scene.position.set(0, 0, 0);
       vrm.springBoneManager?.reset();
 
-      loadAndPlayAnimation({ filename: ANIMATIONS.DEFAULT.idle, animationType: AnimationType.Idle, fadeDuration: 0, override: true });
+      await loadAndPlayAnimation({
+        filename: IDLE_ANIMATION,
+        animationType: AnimationType.Idle,
+        fadeDuration: 0,
+        override: true,
+      });
+      readyRef.current = true;
 
-      //setup speak animation
       if (!vrm.expressionManager) {
         console.error("vrm.expressionManager is null");
         return;
       }
-      const speakExpressionTrackName = vrm.expressionManager.getExpressionTrackName('aa');
+      const speakExpressionTrackName = vrm.expressionManager.getExpressionTrackName("aa");
       if (!speakExpressionTrackName) {
         console.error("Expression track name for 'aa' is null");
         return;
       }
       const speakTrack = new THREE.NumberKeyframeTrack(
-        speakExpressionTrackName, // name
-        [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.9], // times
-        [0.0, 0.3, 0.0, 0.3, 0.1, 0.1, 0.3, 0.1, 0.1, 0.2] // values
+        speakExpressionTrackName,
+        [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.9],
+        [0.0, 0.3, 0.0, 0.3, 0.1, 0.1, 0.3, 0.1, 0.1, 0.2]
       );
-      let clip = new THREE.AnimationClip('Animation', 1.9, [speakTrack]);
-      speakAnimationRef.current = mixerRef.current?.clipAction(clip)
-      const blinkInterval = 2
-      if (!vrm.expressionManager) {
-        console.error("vrm.expressionManager is null");
-        return;
-      }
-      const blinkExpressionTrackName = vrm.expressionManager.getExpressionTrackName('blink');
+      let clip = new THREE.AnimationClip("Animation", 1.9, [speakTrack]);
+      speakAnimationRef.current = mixerRef.current?.clipAction(clip);
+      const blinkInterval = 2;
+      const blinkExpressionTrackName = vrm.expressionManager.getExpressionTrackName("blink");
       if (!blinkExpressionTrackName) {
         console.error("Expression track name for 'blink' is null");
         return;
       }
       const blinkTrack = new THREE.NumberKeyframeTrack(
-        blinkExpressionTrackName, // name
-        [0.0, 0.05, 0.1, blinkInterval], // times
-        [0.0, 1.0, 0.0, 0] // values
+        blinkExpressionTrackName,
+        [0.0, 0.05, 0.1, blinkInterval],
+        [0.0, 1.0, 0.0, 0]
       );
-      clip = new THREE.AnimationClip('Animation', 0.1 + blinkInterval, [blinkTrack]);
-      blinkAnimationRef.current = mixerRef.current?.clipAction(clip)
+      clip = new THREE.AnimationClip("Animation", 0.1 + blinkInterval, [blinkTrack]);
+      blinkAnimationRef.current = mixerRef.current?.clipAction(clip);
       blinkAnimationRef.current?.play();
 
       const animate = () => {
@@ -180,14 +354,14 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
           mixerRef.current?.update(deltaTime);
           vrm.update(deltaTime);
         }
-        
-        setIsSpeaking(globalStateManager.getState("ttsLiveVolume")> 0.1);
+
+        setIsSpeaking(globalStateManager.getState("ttsLiveVolume") > 0.1);
         controls.update();
         renderer.render(scene, camera);
       };
       renderer.setAnimationLoop(animate);
-
     };
+
     const handleResize = () => {
       if (!mountNode) return;
       const width = mountNode.clientWidth || window.innerWidth;
@@ -202,85 +376,69 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
     handleResize();
     const resizeObserver = mountNode ? new ResizeObserver(handleResize) : null;
     resizeObserver?.observe(mountNode!);
-    window.addEventListener('resize', handleResize);
+    window.addEventListener("resize", handleResize);
 
-    // setup listener for click events
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
 
     const onMouseClick = (event: MouseEvent) => {
-      // detect if mouse click is on canvas
-      const validElements = document.querySelectorAll('#character-canvas');
+      const validElements = document.querySelectorAll("#character-canvas");
       const validElementsArray = Array.from(validElements);
       const targetElement = event.target as Element;
-      // console.log(targetElement)
-      if (targetElement && !validElementsArray.includes(targetElement)) return
+      if (targetElement && !validElementsArray.includes(targetElement)) return;
 
       if (!canClickRef.current || lastPlayedGestureRef.current?.isRunning()) return;
-      // Calculate mouse position in normalized device coordinates
-      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
-      // Update the raycaster with the camera and mouse position
+      const rect = (event.target as HTMLElement).getBoundingClientRect?.();
+      if (rect) {
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      } else {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      }
+
       raycaster.setFromCamera(mouse, camera);
-
-      if (!vrmRef.current) return
-      // Check for intersections
+      if (!vrmRef.current) return;
       const intersects = raycaster.intersectObject(vrmRef.current.scene, true);
-
       if (intersects.length > 0) {
-        handleBodyPartClick(intersects[0].object);
+        playGesture(pickAmbientGesture(lastGestureFileRef.current) ?? pickGreetingGesture(), {
+          override: true,
+        });
       }
     };
 
-    window.addEventListener('click', onMouseClick, false);
+    window.addEventListener("click", onMouseClick, false);
 
-    const handleBodyPartClick = (object: THREE.Object3D) => {
-      console.log(object)
-        
-    //   loadAndPlayAnimation({ filename: animation, animationType: AnimationType.Gesture })
-    }
-
-
-    initVRMScene();
+    void initVRMScene();
     return () => {
-        // Cleanup renderer
-        rendererRef.current = null;
-        renderer.dispose();
+      readyRef.current = false;
+      rendererRef.current = null;
+      renderer.dispose();
 
-        // Cleanup AnimationMixer
-        mixerRef.current?.stopAllAction();
-        mixerRef.current = null;
+      mixerRef.current?.stopAllAction();
+      mixerRef.current = null;
+      clockRef.current = null;
 
-        // Cleanup Clock
-        clockRef.current = null;
-
-        // Cleanup scene objects
-        scene.traverse((object) => {
-            if (object instanceof THREE.Mesh) {
-                object.geometry.dispose();
-                if (Array.isArray(object.material)) {
-                    object.material.forEach((material) => material.dispose());
-                } else {
-                    object.material.dispose();
-                }
-            }
-        });
-
-        // Cleanup controls
-        controls.dispose();
-
-        // Remove event listeners
-        resizeObserver?.disconnect();
-        window.removeEventListener('resize', handleResize);
-        window.removeEventListener('click', onMouseClick);
-
-        // Remove renderer DOM element
-        if (mountNode && renderer.domElement) {
-            mountNode.removeChild(renderer.domElement);
+      scene.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.geometry.dispose();
+          if (Array.isArray(object.material)) {
+            object.material.forEach((material) => material.dispose());
+          } else {
+            object.material.dispose();
+          }
         }
+      });
 
-        console.log("VRM3dCanvas resources cleaned up");
+      controls.dispose();
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("click", onMouseClick);
+
+      if (mountNode && renderer.domElement) {
+        mountNode.removeChild(renderer.domElement);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -301,81 +459,6 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
     camera.updateProjectionMatrix();
     renderer.setSize(width, height);
   }, [isActive]);
-
-  enum AnimationType {
-    Idle, // idle animations are looped and resumes playing after a gesture animation is finished
-    Gesture // gesture animations only plays once
-  }
-
-  type LoadAndPlayAnimationParams = {
-    filename: string;
-    animationType: AnimationType;
-    fadeDuration?: number;
-    override?: boolean; // if should override the current animation
-    overridable?: boolean; // if playing an overridable gesture
-    soundFile?: string;
-  };
-
-  const loadAndPlayAnimation = async ({
-    filename,
-    animationType,
-    fadeDuration = 0.5,
-    override = false,
-    overridable = false,
-  }: LoadAndPlayAnimationParams) => {
-    // check if is overriding a gesture
-    if ((!override && lastPlayedGestureRef.current && lastPlayedGestureRef.current.isRunning())) return;
-
-    console.log("playing animation " + filename)
-    // setLastInteractionTime(Date.now());
-    const fullPath = filename.startsWith('/api/character/files/') ? filename : `/api/character/files/VRM3D/animations/${filename}`;
-    if (!mixerRef.current) {
-      return
-    }
-    if (!vrmRef.current) {
-      return
-    }
-
-    const gltfVrma = await gltfLoaderRef.current.loadAsync(fullPath);
-    const vrmAnimation = gltfVrma.userData.vrmAnimations[0];
-    const clip = createVRMAnimationClip(vrmAnimation, vrmRef.current);
-
-    // Create a new action for the new animation clip
-    const newAction = mixerRef.current?.clipAction(clip);
-    newAction.clampWhenFinished = true;
-
-    // to transition from gesture back to idle
-    const onAnimationFinish = () => {
-      mixerRef.current?.removeEventListener('finished', onAnimationFinish); // Clean up the listener
-      if (idleAnimationFileNameRef.current) {
-        loadAndPlayAnimation({ filename: idleAnimationFileNameRef.current, animationType: AnimationType.Idle }); // resume idle animation
-      }
-    };
-
-    // set up animation based on type
-    if (animationType == AnimationType.Idle) {
-      idleAnimationFileNameRef.current = filename;
-      newAction.loop = THREE.LoopRepeat;
-    } else if (animationType == AnimationType.Gesture) {
-      // stop previous animation sound
-      if (!overridable) { lastPlayedGestureRef.current = newAction; }
-      newAction.loop = THREE.LoopOnce;
-      mixerRef.current?.addEventListener('finished', onAnimationFinish);
-    }
-
-    // If there's a currently active action, fade it out
-    if (mainAnimationRef.current) {
-      newAction.weight = 1;
-      // Start playing the new action first
-      newAction.play();
-      // Use crossFadeTo to transition from the current action to the new action
-      mainAnimationRef.current.crossFadeTo(newAction, fadeDuration, true);
-    } else {
-      newAction.play();
-    }
-    mainAnimationRef.current = newAction;
-
-  };
 
   return <div id="character-canvas" ref={mountRef} className="w-full h-full" />;
 };
