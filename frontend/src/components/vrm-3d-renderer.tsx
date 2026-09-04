@@ -19,6 +19,10 @@ import {
   pickGestureFromText,
   pickGreetingGesture,
 } from "@/lib/vrmAnimationCatalog";
+import {
+  detectFaceEmotion,
+  vrmFacialController,
+} from "@/lib/vrmFacialExpressions";
 
 const DEFAULT_CHARACTER_MODEL_PATH = "/resource/VRM3D/models/春日部つむぎハイパー.vrm";
 
@@ -178,6 +182,9 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
     const unsubVoice = globalStateManager.subscribe("isVoiceRecording", (recording) => {
       if (recording && !wasRecordingRef.current) {
         playGesture(pickGestureForMood("listen", lastGestureFileRef.current), { override: true });
+        vrmFacialController.setEmotion("listen", 8000);
+      } else if (!recording && wasRecordingRef.current) {
+        vrmFacialController.setEmotion("neutral", 500);
       }
       wasRecordingRef.current = recording;
     });
@@ -193,14 +200,24 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
           override: false,
           overridable: true,
         });
+        vrmFacialController.setEmotion("thinking", 10000);
       }
       wasThinkingRef.current = Boolean(thinking);
     });
 
+    const applyFaceFromText = (text: string, userText = "") => {
+      const emotion = detectFaceEmotion(text, userText);
+      if (emotion !== "neutral") {
+        vrmFacialController.setEmotion(emotion, 5000);
+      }
+    };
+
     const unsubChat = chatManager.subscribe((messages) => {
       const last = [...messages].reverse().find((m) => m.role === "assistant");
+      const lastUser = [...messages].reverse().find((m) => m.role === "user");
       if (!last?.content) return;
       const len = last.content.length;
+      const userText = lastUser?.content ?? "";
       // Fire when a new assistant reply starts streaming
       if (len < lastAssistantLenRef.current) {
         lastAssistantLenRef.current = len;
@@ -210,30 +227,37 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
         if (!greetedRef.current) {
           greetedRef.current = true;
           playGesture(pickGreetingGesture(), { override: true });
+          vrmFacialController.setEmotion("happy", 4000);
         } else {
-          const keyed = pickGestureFromText(last.content);
+          const keyed = pickGestureFromText(last.content) ?? pickGestureFromText(userText);
           playGesture(
             keyed ?? pickGestureForMood("speak", lastGestureFileRef.current),
             { override: false, overridable: true }
           );
+          applyFaceFromText(last.content, userText);
         }
-      } else if (len - lastAssistantLenRef.current > 40) {
-        // Mid-stream keyword check once enough text arrives
+      } else if (len - lastAssistantLenRef.current > 24) {
         const keyed = pickGestureFromText(last.content);
         if (keyed) playGesture(keyed, { overridable: true });
+        applyFaceFromText(last.content, userText);
       }
       lastAssistantLenRef.current = len;
     });
 
     const volumePoll = window.setInterval(() => {
       const speaking = globalStateManager.getState("ttsLiveVolume") > 0.1;
-      if (speaking && !wasSpeakingRef.current && Math.random() < SPEAK_GESTURE_CHANCE) {
-        const keyed =
-          pickGestureFromText(
-            [...chatManager.getMessages()].reverse().find((m) => m.role === "assistant")?.content ??
-              ""
-          ) ?? pickGestureForMood("speak", lastGestureFileRef.current);
-        playGesture(keyed, { overridable: true });
+      if (speaking && !wasSpeakingRef.current) {
+        const msgs = chatManager.getMessages();
+        const assistantText =
+          [...msgs].reverse().find((m) => m.role === "assistant")?.content ?? "";
+        const userText = [...msgs].reverse().find((m) => m.role === "user")?.content ?? "";
+        applyFaceFromText(assistantText, userText);
+        if (Math.random() < SPEAK_GESTURE_CHANCE) {
+          const keyed =
+            pickGestureFromText(assistantText) ??
+            pickGestureForMood("speak", lastGestureFileRef.current);
+          playGesture(keyed, { overridable: true });
+        }
       }
       wasSpeakingRef.current = speaking;
     }, 200);
@@ -315,6 +339,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
         fadeDuration: 0,
         override: true,
       });
+      vrmFacialController.attach(vrm);
       readyRef.current = true;
 
       if (!vrm.expressionManager) {
@@ -352,6 +377,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
         const deltaTime = clockRef.current?.getDelta();
         if (deltaTime) {
           mixerRef.current?.update(deltaTime);
+          vrmFacialController.update(deltaTime);
           vrm.update(deltaTime);
         }
 
@@ -405,6 +431,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
         playGesture(pickAmbientGesture(lastGestureFileRef.current) ?? pickGreetingGesture(), {
           override: true,
         });
+        vrmFacialController.setEmotion("happy", 2500);
       }
     };
 
@@ -413,6 +440,8 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
     void initVRMScene();
     return () => {
       readyRef.current = false;
+      vrmFacialController.reset();
+      vrmFacialController.attach(null);
       rendererRef.current = null;
       renderer.dispose();
 
