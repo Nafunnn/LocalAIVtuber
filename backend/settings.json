@@ -26,6 +26,7 @@
     "mcp.browser.enabled": true,
     "mcp.browser.port": 9010,
     "mcp.browser.agentId": "localaivtuber",
+    "frontend.idleSpeech.enabled": true,
     "frontend.character.selectedLive2DModel": "/api/character/files/live2D/models/akari_vts/akari.model3.json",
     "input.camera.enabled": false
 }

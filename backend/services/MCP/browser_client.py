@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from typing import Any, Dict
 
 from services.lib.LAV_logger import logger
@@ -47,6 +48,7 @@ class BrowserMCPClient(StdioMCPClient):
         self._port = int(port)
         self._agent_id = str(agent_id).strip() or DEFAULT_AGENT_ID
         self._extension_connected: bool | None = None
+        self._last_tool_at: float = 0.0
         command, args, server_cwd = self._resolve_spawn()
         super().__init__(
             name="Browser",
@@ -95,10 +97,20 @@ class BrowserMCPClient(StdioMCPClient):
                 "agentId": self._agent_id,
                 "wsUrl": self.ws_url(),
                 "extensionConnected": self._extension_connected,
+                "recentlyActive": self.recently_active(),
                 "package": "betterbrowsermcp",
             }
         )
         return st
+
+    def mark_tool_activity(self) -> None:
+        """Record that a browser_* tool just ran (for character animation cues)."""
+        self._last_tool_at = time.time()
+
+    def recently_active(self, window_s: float = 75.0) -> bool:
+        if self._last_tool_at <= 0:
+            return False
+        return (time.time() - self._last_tool_at) < window_s
 
     def check_extension_connected(self) -> bool:
         """Probe whether the Chrome extension is connected via a lightweight tool call."""

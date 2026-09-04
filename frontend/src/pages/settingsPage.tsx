@@ -205,6 +205,11 @@ function SettingsPage() {
                     label="Disable Pipeline"
                     description="For testing individual pipeline stages without triggering the entire pipeline."
                 />
+                <SettingSwitch
+                    id="frontend.idleSpeech.enabled"
+                    label="Idle humming"
+                    description="Occasionally hum, mutter, or softly call you when quiet (about every 1–3 minutes)."
+                />
                 {!isOllamaCloud && (
                     <SettingSwitch
                         id="llm.keep_model_loaded"

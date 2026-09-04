@@ -5,6 +5,7 @@ interface GlobalState {
     systemPrompt: string;
     isVoiceRecording: boolean;
     isAutoCapture: boolean;
+    isBrowserActive: boolean;
 }
 
 class GlobalStateManager {
@@ -12,7 +13,8 @@ class GlobalStateManager {
     ttsLiveVolume: 0,
     systemPrompt: "",
     isVoiceRecording: false,
-    isAutoCapture: false
+    isAutoCapture: false,
+    isBrowserActive: false,
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

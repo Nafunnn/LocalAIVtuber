@@ -13,6 +13,21 @@ FILLER_LIBRARY = {
     "concerned": ["Oh...", "Hmm...", "Are you okay?"],
     "playful": ["Ehehe~", "Mmm?", "Oh my~"],
     "affectionate": ["Mm~", "Honey...", "Hmm~"],
+    # Rare spontaneous idle mutter / humming when nothing else is going on
+    "idle": [
+        "Hmm~",
+        "Hmm hmm~",
+        "La la~",
+        "Mm...",
+        "Honey?",
+        "Dear?",
+        "Hehe~",
+        "Where did you go~",
+        "Just humming...",
+        "Miss you~",
+        "Ah...",
+        "Mmm?",
+    ],
 }
 
 VALID_MOODS = set(FILLER_LIBRARY.keys())

@@ -5,6 +5,7 @@ import { pushToTalkController } from "@/lib/pushToTalk";
 import { useSettings } from "@/context/SettingsContext";
 import { chatManager, ChatManager } from "@/lib/chatManager";
 import { ttsManager } from "@/lib/ttsManager";
+import { idleAmbientSpeech } from "@/lib/idleAmbientSpeech";
 
 export function PushToTalkOverlay() {
   const { settings } = useSettings();
@@ -13,9 +14,18 @@ export function PushToTalkOverlay() {
   // Keep chat/TTS singletons warm and sync system prompt for voice → AI path.
   useEffect(() => {
     void ttsManager;
+    idleAmbientSpeech.start({
+      enabled: settings["frontend.idleSpeech.enabled"] !== false,
+    });
     pushToTalkController.bind();
-    return () => pushToTalkController.unbind();
+    return () => {
+      pushToTalkController.unbind();
+    };
   }, []);
+
+  useEffect(() => {
+    idleAmbientSpeech.setEnabled(settings["frontend.idleSpeech.enabled"] !== false);
+  }, [settings]);
 
   useEffect(() => {
     const prompt = settings["llm.system_prompt"];

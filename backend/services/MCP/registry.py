@@ -82,6 +82,8 @@ class MCPRegistry:
             owner = self._tool_owner.get(name)
         if owner is None:
             raise RuntimeError(f"No MCP client owns tool '{name}'")
+        if owner == "browser" or str(name).startswith("browser_"):
+            browser_mcp.mark_tool_activity()
         return self._clients[owner].call_tool(name, arguments)
 
     def ping_all(self) -> Dict[str, Any]:

@@ -4,7 +4,8 @@ export type FillerMood =
   | "happy"
   | "concerned"
   | "playful"
-  | "affectionate";
+  | "affectionate"
+  | "idle";
 
 export function detectFillerMood(text: string, userText = ""): FillerMood {
   const combined = `${text} ${userText}`.toLowerCase();

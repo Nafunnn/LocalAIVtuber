@@ -128,6 +128,79 @@ export class TTSManager {
         return this.playbackMode === "idle" && !this.isPlaying;
     }
 
+    /** True when nothing is synthesizing or speaking (safe for idle ambient). */
+    public isQuiet(): boolean {
+        return this.playbackMode === "idle" && !this.isPlaying && !this.isProcessing;
+    }
+
+    /**
+     * Play a rare idle hum / mutter filler when the pipeline is quiet.
+     * Interrupted automatically when real speech or thinking fillers start.
+     */
+    public async playIdleAmbient(): Promise<boolean> {
+        if (!this.isQuiet()) return false;
+
+        const session = this.fillerSession;
+        const fillerUrl = await fetchFillerAudio("idle");
+
+        if (
+            !fillerUrl ||
+            session !== this.fillerSession ||
+            !this.isQuiet()
+        ) {
+            if (fillerUrl?.startsWith("blob:")) {
+                URL.revokeObjectURL(fillerUrl);
+            }
+            return false;
+        }
+
+        await this.stopFillerAndWait();
+
+        if (session !== this.fillerSession || !this.isQuiet()) {
+            if (fillerUrl.startsWith("blob:")) {
+                URL.revokeObjectURL(fillerUrl);
+            }
+            return false;
+        }
+
+        const audio = new Audio(fillerUrl);
+        audio.loop = false;
+        audio.volume = 0.48;
+        this.fillerAudio = audio;
+        this.playbackMode = "filler";
+
+        const clearFiller = () => {
+            if (this.fillerAudio !== audio) return;
+            this.fillerAudio = null;
+            this.clearFillerVolumeTimer();
+            if (this.playbackMode === "filler") {
+                this.playbackMode = "idle";
+            }
+            this.resetLiveVolume();
+            if (audio.src.startsWith("blob:")) {
+                URL.revokeObjectURL(audio.src);
+            }
+        };
+
+        audio.onended = clearFiller;
+        audio.onerror = clearFiller;
+
+        try {
+            await audio.play();
+            if (session !== this.fillerSession || this.isProcessing || this.isPlaying) {
+                audio.pause();
+                clearFiller();
+                return false;
+            }
+            this.startFillerVolumePulse();
+            return true;
+        } catch (err) {
+            console.warn("Idle ambient playback skipped:", err);
+            clearFiller();
+            return false;
+        }
+    }
+
     private async stopFillerAndWait(): Promise<void> {
         this.clearFillerVolumeTimer();
 

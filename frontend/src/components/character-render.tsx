@@ -101,7 +101,7 @@ export function CharacterRender({ isActive = true }: { isActive?: boolean }) {
 
     return (
         <div className="relative h-full overflow-hidden">
-            <SidePanel width={400} isOpen={isActive}>
+            <SidePanel width={400} isOpen={false}>
 
                 <div className="space-y-4">
 

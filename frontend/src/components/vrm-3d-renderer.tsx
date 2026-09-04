@@ -14,10 +14,12 @@ import { pipelineManager } from "@/lib/pipelineManager";
 import { chatManager } from "@/lib/chatManager";
 import {
   IDLE_ANIMATION,
+  looksLikeBrowserRequest,
   pickAmbientGesture,
   pickGestureForMood,
   pickGestureFromText,
   pickGreetingGesture,
+  pickSmartphoneGesture,
 } from "@/lib/vrmAnimationCatalog";
 import {
   detectFaceEmotion,
@@ -68,6 +70,8 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
   const wasSpeakingRef = useRef(false);
   const wasRecordingRef = useRef(false);
   const wasThinkingRef = useRef(false);
+  const wasBrowserActiveRef = useRef(false);
+  const lastBrowserUserKeyRef = useRef("");
 
   const [isSpeaking, setIsSpeaking] = React.useState(false);
   const canClickRef = useRef(true);
@@ -149,6 +153,14 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
     });
   };
 
+  const playSmartphone = (opts?: { override?: boolean }) => {
+    playGesture(pickSmartphoneGesture(), { override: opts?.override ?? true, overridable: true });
+    vrmFacialController.setEmotion("listen", 12000);
+  };
+
+  const latestUserText = () =>
+    [...chatManager.getMessages()].reverse().find((m) => m.role === "user")?.content ?? "";
+
   useEffect(() => {
     if (isSpeaking) {
       speakAnimationRef.current?.reset().play();
@@ -169,7 +181,8 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
           readyRef.current &&
           !lastPlayedGestureRef.current?.isRunning() &&
           globalStateManager.getState("ttsLiveVolume") <= 0.1 &&
-          !globalStateManager.getState("isVoiceRecording")
+          !globalStateManager.getState("isVoiceRecording") &&
+          !globalStateManager.getState("isBrowserActive")
         ) {
           playGesture(pickAmbientGesture(lastGestureFileRef.current), { overridable: true });
         }
@@ -189,13 +202,24 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
       wasRecordingRef.current = recording;
     });
 
+    const unsubBrowser = globalStateManager.subscribe("isBrowserActive", (active) => {
+      if (active && !wasBrowserActiveRef.current) {
+        playSmartphone({ override: true });
+      }
+      wasBrowserActiveRef.current = active;
+    });
+
     const unsubPipe = pipelineManager.subscribe((tasks) => {
       const active = tasks.find(
         (t) => t.status !== "task_finished" && t.status !== "cancelled"
       );
-      const thinking = active?.status === "llm_started";
+      const thinking = active?.status === "llm_started" || active?.status === "created";
+      const userText = active?.input || latestUserText();
+      const browserIntent = looksLikeBrowserRequest(userText);
 
-      if (thinking && !wasThinkingRef.current) {
+      if (thinking && browserIntent) {
+        playSmartphone({ override: true });
+      } else if (thinking && !wasThinkingRef.current) {
         playGesture(pickGestureForMood("think", lastGestureFileRef.current), {
           override: false,
           overridable: true,
@@ -215,10 +239,15 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
     const unsubChat = chatManager.subscribe((messages) => {
       const last = [...messages].reverse().find((m) => m.role === "assistant");
       const lastUser = [...messages].reverse().find((m) => m.role === "user");
+      const userText = lastUser?.content ?? "";
+
+      if (userText && looksLikeBrowserRequest(userText) && userText !== lastBrowserUserKeyRef.current) {
+        lastBrowserUserKeyRef.current = userText;
+        playSmartphone({ override: true });
+      }
+
       if (!last?.content) return;
       const len = last.content.length;
-      const userText = lastUser?.content ?? "";
-      // Fire when a new assistant reply starts streaming
       if (len < lastAssistantLenRef.current) {
         lastAssistantLenRef.current = len;
         return;
@@ -228,6 +257,9 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
           greetedRef.current = true;
           playGesture(pickGreetingGesture(), { override: true });
           vrmFacialController.setEmotion("happy", 4000);
+        } else if (looksLikeBrowserRequest(userText)) {
+          playSmartphone({ override: false });
+          applyFaceFromText(last.content, userText);
         } else {
           const keyed = pickGestureFromText(last.content) ?? pickGestureFromText(userText);
           playGesture(
@@ -237,8 +269,12 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
           applyFaceFromText(last.content, userText);
         }
       } else if (len - lastAssistantLenRef.current > 24) {
-        const keyed = pickGestureFromText(last.content);
-        if (keyed) playGesture(keyed, { overridable: true });
+        if (looksLikeBrowserRequest(userText) || looksLikeBrowserRequest(last.content)) {
+          playSmartphone({ override: false });
+        } else {
+          const keyed = pickGestureFromText(last.content);
+          if (keyed) playGesture(keyed, { overridable: true });
+        }
         applyFaceFromText(last.content, userText);
       }
       lastAssistantLenRef.current = len;
@@ -252,7 +288,9 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
           [...msgs].reverse().find((m) => m.role === "assistant")?.content ?? "";
         const userText = [...msgs].reverse().find((m) => m.role === "user")?.content ?? "";
         applyFaceFromText(assistantText, userText);
-        if (Math.random() < SPEAK_GESTURE_CHANCE) {
+        if (looksLikeBrowserRequest(userText) || looksLikeBrowserRequest(assistantText)) {
+          playSmartphone({ override: false });
+        } else if (Math.random() < SPEAK_GESTURE_CHANCE) {
           const keyed =
             pickGestureFromText(assistantText) ??
             pickGestureForMood("speak", lastGestureFileRef.current);
@@ -262,10 +300,22 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
       wasSpeakingRef.current = speaking;
     }, 200);
 
+    const browserPoll = window.setInterval(() => {
+      void fetch("/api/mcp/browser/activity")
+        .then(async (res) => {
+          if (!res.ok) return;
+          const data = (await res.json()) as { active?: boolean; enabled?: boolean };
+          globalStateManager.updateState("isBrowserActive", Boolean(data.enabled && data.active));
+        })
+        .catch(() => undefined);
+    }, 1500);
+
     return () => {
       if (ambientTimer) window.clearTimeout(ambientTimer);
       window.clearInterval(volumePoll);
+      window.clearInterval(browserPoll);
       unsubVoice();
+      unsubBrowser();
       unsubPipe();
       unsubChat();
     };

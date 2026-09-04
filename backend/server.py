@@ -465,6 +465,17 @@ async def get_browser_mcp_status():
     from services.MCP import mcp_registry
     return JSONResponse(content=mcp_registry.ping_browser())
 
+@app.get("/api/mcp/browser/activity")
+async def get_browser_mcp_activity():
+    """Lightweight flag for UI/character cues — does not probe the extension."""
+    from services.MCP.browser_client import browser_mcp
+    return JSONResponse(
+        content={
+            "enabled": bool(browser_mcp.enabled),
+            "active": browser_mcp.recently_active(),
+        }
+    )
+
 @app.get("/api/mcp/status")
 async def get_mcp_status():
     from services.MCP import mcp_registry
@@ -951,6 +962,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "mcp.browser.enabled": False,
     "mcp.browser.port": 9010,
     "mcp.browser.agentId": "localaivtuber",
+    "frontend.idleSpeech.enabled": True,
 }
 
 class SettingsManager:
@@ -1073,7 +1085,7 @@ startup_progress.show_step("Warming up TTS")
 try:
     tts.synthesize("Hi")
     from services.TTS.fillers import warm_up_fillers
-    warm_up_fillers(tts, moods=["neutral", "thinking", "affectionate"])
+    warm_up_fillers(tts, moods=["neutral", "thinking", "affectionate", "idle"])
     startup_progress.complete_step(f"TTS warmed up successfully in {time.time() - start_time:.2f}s")
 except Exception as e:
     startup_progress.complete_step(f"TTS warm-up failed (non-critical) in {time.time() - start_time:.2f}s")

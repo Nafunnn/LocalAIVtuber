@@ -201,6 +201,11 @@ class MCPToolAgent:
         )
         options = self.ollama_llm._build_options(**sampling_params)
         tool_intent = _looks_like_music_request(text) or _looks_like_browser_request(text)
+        if _looks_like_browser_request(text):
+            from .browser_client import browser_mcp
+
+            if browser_mcp.enabled:
+                browser_mcp.mark_tool_activity()
         logger.info(f"MCP tool agent starting with {len(ollama_tools)} tools")
 
         final_content = ""
