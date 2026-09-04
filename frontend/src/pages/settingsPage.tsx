@@ -21,13 +21,28 @@ interface SpotifyMcpStatus {
     error: string | null;
 }
 
+interface BrowserMcpStatus {
+    enabled: boolean;
+    runtimeAvailable: boolean;
+    serverBuilt: boolean;
+    connected: boolean;
+    extensionConnected: boolean | null;
+    toolCount: number;
+    port?: number;
+    agentId?: string;
+    wsUrl?: string;
+    error: string | null;
+}
+
 function SettingsPage() {
     const { loading, settings } = useSettings();
     const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
     const [spotifyStatus, setSpotifyStatus] = useState<SpotifyMcpStatus | null>(null);
+    const [browserStatus, setBrowserStatus] = useState<BrowserMcpStatus | null>(null);
     const provider = settings["llm.provider"] ?? "ollama_cloud";
     const isOllamaCloud = provider === "ollama_cloud";
     const spotifyEnabled = Boolean(settings["mcp.spotify.enabled"]);
+    const browserEnabled = Boolean(settings["mcp.browser.enabled"]);
 
     const fetchSpotifyStatus = useCallback(async () => {
         try {
@@ -37,6 +52,17 @@ function SettingsPage() {
             }
         } catch (error) {
             console.error("Failed to fetch Spotify MCP status:", error);
+        }
+    }, []);
+
+    const fetchBrowserStatus = useCallback(async () => {
+        try {
+            const res = await fetch("/api/mcp/browser/status");
+            if (res.ok) {
+                setBrowserStatus(await res.json());
+            }
+        } catch (error) {
+            console.error("Failed to fetch Browser MCP status:", error);
         }
     }, []);
 
@@ -57,6 +83,10 @@ function SettingsPage() {
     useEffect(() => {
         fetchSpotifyStatus();
     }, [fetchSpotifyStatus, spotifyEnabled, provider]);
+
+    useEffect(() => {
+        fetchBrowserStatus();
+    }, [fetchBrowserStatus, browserEnabled, provider]);
 
     if (loading) {
         return <div>Loading settings...</div>;
@@ -88,6 +118,45 @@ function SettingsPage() {
         }
         return "Spotify MCP configured. Enable the switch to let the AI control Spotify.";
     })();
+
+    const browserReady =
+        browserStatus &&
+        browserStatus.runtimeAvailable &&
+        browserStatus.serverBuilt &&
+        browserStatus.extensionConnected === true &&
+        !browserStatus.error;
+    const browserMessage = (() => {
+        if (!browserStatus) {
+            return "Checking Browser MCP…";
+        }
+        if (!browserStatus.runtimeAvailable) {
+            return "Node.js/npx not found. Install Node.js 16+ (see docs/BROWSER_MCP.md)";
+        }
+        if (!browserStatus.serverBuilt) {
+            return "Better Browser MCP not built. Run scripts/setup-browser-mcp.ps1";
+        }
+        if (browserStatus.error) {
+            return browserStatus.error;
+        }
+        const wsHint = browserStatus.wsUrl
+            ? ` Endpoint: ${browserStatus.wsUrl}`
+            : "";
+        if (browserEnabled && browserStatus.extensionConnected === true) {
+            return `Browser MCP ready (${browserStatus.toolCount} tools).${wsHint}`;
+        }
+        if (browserEnabled && browserStatus.connected) {
+            return `WebSocket server running — bind a Chrome tab to agent "${browserStatus.agentId ?? "localaivtuber"}" in the extension.${wsHint}`;
+        }
+        if (browserEnabled && browserStatus.error?.includes("WebSocket server is running")) {
+            return `${browserStatus.error}${wsHint}`;
+        }
+        if (browserEnabled) {
+            return `Browser MCP enabled — will connect on first browser request.${wsHint}`;
+        }
+        return `Load third_party/betterbrowsermcp-extension in Chrome, add agent on port ${browserStatus.port ?? 9010}, then enable this switch.`;
+    })();
+
+    const mcpNeedsOllamaCloud = (spotifyEnabled || browserEnabled) && !isOllamaCloud;
 
     return (
         <div className="h-full overflow-y-auto p-5">
@@ -149,7 +218,6 @@ function SettingsPage() {
                     label="Spotify MCP"
                     description="Let the AI search, play, and manage Spotify (Ollama Cloud + Premium required). See docs/SPOTIFY_MCP.md."
                     onClick={() => {
-                        // Refresh after settings persist
                         setTimeout(fetchSpotifyStatus, 400);
                     }}
                 />
@@ -169,9 +237,35 @@ function SettingsPage() {
                         <span>{spotifyMessage}</span>
                     </div>
                 )}
-                {!isOllamaCloud && spotifyEnabled && (
+
+                <SettingSwitch
+                    id="mcp.browser.enabled"
+                    label="Browser MCP"
+                    description="Search and automate Chrome via Better Browser MCP on port 9010 (runs alongside Cursor). See docs/BROWSER_MCP.md."
+                    onClick={() => {
+                        setTimeout(fetchBrowserStatus, 400);
+                    }}
+                />
+                {browserStatus && (
+                    <div
+                        className={`flex items-center gap-2 text-sm p-3 rounded-md ${
+                            browserReady && browserEnabled
+                                ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                                : "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                        }`}
+                    >
+                        {browserReady && browserEnabled ? (
+                            <CheckCircle2 className="h-4 w-4 shrink-0" />
+                        ) : (
+                            <AlertCircle className="h-4 w-4 shrink-0" />
+                        )}
+                        <span>{browserMessage}</span>
+                    </div>
+                )}
+
+                {mcpNeedsOllamaCloud && (
                     <p className="text-sm text-muted-foreground">
-                        Spotify tools only run with the Ollama Cloud provider. Switch provider above to use them.
+                        MCP tools only run with the Ollama Cloud provider. Switch provider above to use them.
                     </p>
                 )}
             </Panel>

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+_MAX_SNAPSHOT_CHARS = 12000
+
 
 def _get_input_schema(tool: Any) -> Dict[str, Any] | None:
     """Read JSON schema from MCP Tool (SDK v1 camelCase or v2 snake_case)."""
@@ -42,7 +44,6 @@ def mcp_tools_to_ollama(tools: List[Any]) -> List[Dict[str, Any]]:
             parameters = dict(input_schema)
         else:
             parameters = {"type": "object", "properties": {}}
-        # Ollama expects a plain JSON Schema object; drop draft metadata noise.
         parameters.pop("$schema", None)
         if "type" not in parameters:
             parameters["type"] = "object"
@@ -62,7 +63,7 @@ def mcp_tools_to_ollama(tools: List[Any]) -> List[Dict[str, Any]]:
 
 
 def normalize_tool_arguments(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Fix common model mistakes in Spotify tool args."""
+    """Fix common model mistakes in MCP tool args."""
     args = dict(arguments or {})
     if name == "searchSpotify":
         if "query" not in args and "q" in args:
@@ -70,14 +71,25 @@ def normalize_tool_arguments(name: str, arguments: Dict[str, Any]) -> Dict[str, 
         if "type" not in args:
             args["type"] = "track"
     if name == "playMusic":
-        # Prefer uri when both present; leave as-is otherwise.
-        if "uri" not in args and args.get("id") and args.get("type"):
-            pass
         if "uri" not in args and "trackUri" in args:
             args["uri"] = args.pop("trackUri")
         if "uri" not in args and "spotify_uri" in args:
             args["uri"] = args.pop("spotify_uri")
+    if name == "browser_navigate":
+        if "url" not in args and "link" in args:
+            args["url"] = args.pop("link")
+        if "url" not in args and "href" in args:
+            args["url"] = args.pop("href")
+    if name == "browser_type":
+        if "text" not in args and "value" in args:
+            args["text"] = args.pop("value")
     return args
+
+
+def _truncate_snapshot_text(text: str) -> str:
+    if len(text) <= _MAX_SNAPSHOT_CHARS:
+        return text
+    return text[:_MAX_SNAPSHOT_CHARS] + "\n… [truncated for context length]"
 
 
 def tool_result_to_text(result: Any) -> str:
@@ -95,11 +107,17 @@ def tool_result_to_text(result: Any) -> str:
         return prefix + str(result)
     parts: List[str] = []
     for block in content:
+        block_type = getattr(block, "type", None)
+        if block_type is None and isinstance(block, dict):
+            block_type = block.get("type")
+        if block_type == "image":
+            parts.append("[Screenshot captured]")
+            continue
         text = getattr(block, "text", None)
         if text is None and isinstance(block, dict):
             text = block.get("text")
         if text:
-            parts.append(text)
+            parts.append(_truncate_snapshot_text(text))
         else:
             parts.append(str(block))
     return prefix + ("\n".join(parts) if parts else str(result))

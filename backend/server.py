@@ -457,8 +457,18 @@ async def get_ollama_status():
 
 @app.get("/api/mcp/spotify/status")
 async def get_spotify_mcp_status():
-    from services.MCP import spotify_mcp
-    return JSONResponse(content=spotify_mcp.ping_tools())
+    from services.MCP import mcp_registry
+    return JSONResponse(content=mcp_registry.ping_spotify())
+
+@app.get("/api/mcp/browser/status")
+async def get_browser_mcp_status():
+    from services.MCP import mcp_registry
+    return JSONResponse(content=mcp_registry.ping_browser())
+
+@app.get("/api/mcp/status")
+async def get_mcp_status():
+    from services.MCP import mcp_registry
+    return JSONResponse(content=mcp_registry.ping_all())
 
 # *******************************
 # Model Download
@@ -938,6 +948,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "input.language": "en",
     "input.camera.deviceId": "",
     "mcp.spotify.enabled": False,
+    "mcp.browser.enabled": False,
+    "mcp.browser.port": 9010,
+    "mcp.browser.agentId": "localaivtuber",
 }
 
 class SettingsManager:
@@ -990,6 +1003,35 @@ class SettingsManager:
                 voice_input.set_input_language(value)
             if key == "mcp.spotify.enabled":
                 llm.set_spotify_mcp_enabled(bool(value))
+            if key == "mcp.browser.enabled":
+                llm.set_browser_mcp_enabled(bool(value))
+            if key == "mcp.browser.port":
+                try:
+                    llm.configure_browser_mcp(
+                        int(value),
+                        self.settings.get("mcp.browser.agentId", "localaivtuber"),
+                    )
+                except (TypeError, ValueError):
+                    logger.warning(f"Invalid mcp.browser.port: {value}")
+            if key == "mcp.browser.agentId":
+                agent_id = str(value).strip() or "localaivtuber"
+                try:
+                    llm.configure_browser_mcp(
+                        int(self.settings.get("mcp.browser.port", 9010)),
+                        agent_id,
+                    )
+                except (TypeError, ValueError):
+                    llm.configure_browser_mcp(9010, agent_id)
+        
+        # Ensure browser MCP config is applied even if only enabled flag changed
+        try:
+            llm.configure_browser_mcp(
+                int(self.settings.get("mcp.browser.port", 9010)),
+                str(self.settings.get("mcp.browser.agentId", "localaivtuber")).strip()
+                or "localaivtuber",
+            )
+        except (TypeError, ValueError):
+            llm.configure_browser_mcp(9010, "localaivtuber")
         
         # Apply LLM sampling parameters
         llm_sampling_params = {}

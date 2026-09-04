@@ -155,6 +155,20 @@ Then create a Spotify Developer app, fill `third_party/spotify-mcp-server/spotif
 
 Full walkthrough (including Cursor IDE MCP config): [docs/SPOTIFY_MCP.md](docs/SPOTIFY_MCP.md)
 
+## Browser MCP (optional)
+
+Let the VTuber AI search and automate the web via [Better Browser MCP](https://github.com/nbiish/betterbrowsermcp) on **port 9010** (runs alongside Cursor's Browser MCP on 9009).
+
+**Requires:** Node.js 16+, git, Chrome + Better Browser MCP extension, Ollama Cloud with a tool-capable model.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-browser-mcp.ps1
+```
+
+Load the extension from `third_party/betterbrowsermcp-extension`, add agent `localaivtuber` on port `9010`, bind a tab, then enable **Browser MCP** in Settings.
+
+Full walkthrough: [docs/BROWSER_MCP.md](docs/BROWSER_MCP.md)
+
 ## FAQ
 ### nltk error
 <img width="449" height="142" alt="image" src="https://github.com/user-attachments/assets/04a80930-5da0-439f-b6c6-23f4b993a543" />

@@ -1,15 +1,15 @@
-"""Ollama + MCP tool-calling agent loop for Spotify."""
+"""Ollama + MCP tool-calling agent loop (multi-MCP)."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, Generator, List, Optional
 
 from services.lib.LAV_logger import logger
+from .registry import MCPRegistry
 from .schemas import mcp_tools_to_ollama, normalize_tool_arguments
-from .spotify_client import SPOTIFY_SYSTEM_HINT, SpotifyMCPClient
 
 
-MAX_TOOL_ROUNDS = 8
+MAX_TOOL_ROUNDS = 14
 
 _MUSIC_INTENT_KEYWORDS = (
     "spotify",
@@ -28,10 +28,37 @@ _MUSIC_INTENT_KEYWORDS = (
     "now playing",
 )
 
+_BROWSER_INTENT_KEYWORDS = (
+    "google",
+    "search",
+    "browse",
+    "browser",
+    "website",
+    "web ",
+    "open http",
+    "open www",
+    "navigate",
+    "look up",
+    "lookup",
+    "find online",
+    "youtube.com",
+    "wikipedia",
+    "tab ",
+    "page ",
+    "url ",
+    "http://",
+    "https://",
+)
+
 
 def _looks_like_music_request(text: str) -> bool:
     lowered = (text or "").lower()
     return any(k in lowered for k in _MUSIC_INTENT_KEYWORDS)
+
+
+def _looks_like_browser_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(k in lowered for k in _BROWSER_INTENT_KEYWORDS)
 
 
 def _message_to_dict(message: Any) -> Dict[str, Any]:
@@ -90,7 +117,6 @@ def _tool_call_parts(call: Any) -> tuple[str, Dict[str, Any]]:
         name = getattr(fn, "name", "") if fn is not None else ""
         arguments = getattr(fn, "arguments", None) if fn is not None else {}
     if not isinstance(arguments, dict):
-        # Some SDKs return JSON strings
         import json
 
         try:
@@ -100,12 +126,41 @@ def _tool_call_parts(call: Any) -> tuple[str, Dict[str, Any]]:
     return name, arguments
 
 
-class SpotifyToolAgent:
+def _build_nudge(text: str, registry: MCPRegistry) -> str | None:
+    music = _looks_like_music_request(text)
+    browser = _looks_like_browser_request(text)
+    from .spotify_client import spotify_mcp
+    from .browser_client import browser_mcp
+
+    if music and spotify_mcp.enabled and not browser:
+        return (
+            "You must use Spotify tools for this request. "
+            "Call searchSpotify and/or playMusic (or the right playback tool) now. "
+            "Do not pretend music is playing."
+        )
+    if browser and browser_mcp.enabled and not music:
+        return (
+            "You must use browser tools for this request. "
+            "Start with browser_navigate or browser_snapshot as appropriate. "
+            "Do not pretend you searched the web without tool results."
+        )
+    if music and browser:
+        parts = []
+        if spotify_mcp.enabled:
+            parts.append("Use Spotify tools for music actions.")
+        if browser_mcp.enabled:
+            parts.append("Use browser tools for web/search actions.")
+        if parts:
+            return " ".join(parts) + " Do not claim success without tool results."
+    return None
+
+
+class MCPToolAgent:
     """Run non-streaming tool rounds, then stream the final natural-language reply."""
 
-    def __init__(self, ollama_llm, mcp_client: SpotifyMCPClient):
+    def __init__(self, ollama_llm, registry: MCPRegistry):
         self.ollama_llm = ollama_llm
-        self.mcp = mcp_client
+        self.registry = registry
 
     def run(
         self,
@@ -116,9 +171,9 @@ class SpotifyToolAgent:
         **sampling_params,
     ) -> Generator[str, None, None]:
         try:
-            mcp_tools = self.mcp.get_tools()
+            mcp_tools = self.registry.get_all_tools()
         except Exception as e:
-            logger.error(f"Spotify MCP unavailable; falling back to plain chat: {e}")
+            logger.error(f"MCP unavailable; falling back to plain chat: {e}")
             yield from self.ollama_llm.get_chat_completion(
                 text, history, system_prompt, images=images, **sampling_params
             )
@@ -126,41 +181,33 @@ class SpotifyToolAgent:
 
         ollama_tools = mcp_tools_to_ollama(mcp_tools)
         if not ollama_tools:
-            logger.warning("Spotify MCP returned no tools; falling back to plain chat")
+            logger.warning("MCP returned no tools; falling back to plain chat")
             yield from self.ollama_llm.get_chat_completion(
                 text, history, system_prompt, images=images, **sampling_params
             )
             return
 
         augmented_system = system_prompt or ""
-        if SPOTIFY_SYSTEM_HINT not in augmented_system:
-            augmented_system = (
-                f"{augmented_system}\n\n{SPOTIFY_SYSTEM_HINT}".strip()
-                if augmented_system
-                else SPOTIFY_SYSTEM_HINT
-            )
+        for hint in self.registry.get_system_hints():
+            if hint not in augmented_system:
+                augmented_system = (
+                    f"{augmented_system}\n\n{hint}".strip()
+                    if augmented_system
+                    else hint
+                )
 
         messages = self.ollama_llm._build_messages(
             text, history, augmented_system, images=images
         )
         options = self.ollama_llm._build_options(**sampling_params)
-        music_intent = _looks_like_music_request(text)
-        # Log once that schemas actually have properties (guards against empty schemas).
-        sample = next(
-            (t for t in ollama_tools if t["function"]["name"] == "searchSpotify"),
-            None,
-        )
-        if sample:
-            props = (sample["function"].get("parameters") or {}).get("properties") or {}
-            logger.info(
-                f"Spotify tool schemas ready (searchSpotify props={list(props.keys())})"
-            )
+        tool_intent = _looks_like_music_request(text) or _looks_like_browser_request(text)
+        logger.info(f"MCP tool agent starting with {len(ollama_tools)} tools")
 
         final_content = ""
         nudged_for_tools = False
         for round_idx in range(MAX_TOOL_ROUNDS):
             logger.info(
-                f"Spotify tool agent round {round_idx + 1}/{MAX_TOOL_ROUNDS} "
+                f"MCP tool agent round {round_idx + 1}/{MAX_TOOL_ROUNDS} "
                 f"(tools={len(ollama_tools)})"
             )
             try:
@@ -185,23 +232,12 @@ class SpotifyToolAgent:
 
             if not tool_calls:
                 final_content = msg_dict.get("content") or ""
-                # Model skipped tools on a clear music request — nudge once.
-                if music_intent and not nudged_for_tools and round_idx == 0:
+                nudge = _build_nudge(text, self.registry) if tool_intent else None
+                if nudge and not nudged_for_tools and round_idx == 0:
                     nudged_for_tools = True
-                    logger.warning(
-                        "Music request but model returned no tool_calls; nudging once"
-                    )
+                    logger.warning("Tool intent detected but model returned no tool_calls; nudging once")
                     messages.append(msg_dict)
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "You must use Spotify tools for this request. "
-                                "Call searchSpotify and/or playMusic (or the right "
-                                "playback tool) now. Do not pretend music is playing."
-                            ),
-                        }
-                    )
+                    messages.append({"role": "user", "content": nudge})
                     final_content = ""
                     continue
                 messages.append(msg_dict)
@@ -215,13 +251,13 @@ class SpotifyToolAgent:
                 if not name:
                     result_text = "Error: missing tool name"
                 else:
-                    logger.info(f"Calling Spotify MCP tool: {name}({arguments})")
+                    logger.info(f"Calling MCP tool: {name}({arguments})")
                     try:
-                        result_text = self.mcp.call_tool(name, arguments)
+                        result_text = self.registry.call_tool(name, arguments)
                     except Exception as e:
                         result_text = f"Error calling {name}: {e}"
                     preview = result_text.replace("\n", " ")[:240]
-                    logger.info(f"Spotify MCP result [{name}]: {preview}")
+                    logger.info(f"MCP result [{name}]: {preview}")
                 messages.append(
                     {
                         "role": "tool",
@@ -230,15 +266,18 @@ class SpotifyToolAgent:
                     }
                 )
         else:
-            logger.warning("Spotify tool agent hit max rounds without a final reply")
+            logger.warning("MCP tool agent hit max rounds without a final reply")
             final_content = final_content or (
-                "I tried to use Spotify but needed too many steps. "
+                "I tried to use my tools but needed too many steps. "
                 "Want me to try a simpler request?"
             )
 
         if not final_content:
-            # One more streaming pass without tools for a spoken reply
             yield from self.ollama_llm._stream_chat(messages, options)
             return
 
         yield final_content
+
+
+# Backward-compatible alias
+SpotifyToolAgent = MCPToolAgent
