@@ -1,2 +1,4 @@
 data/*
 chat_sessions/*
+document_files/*
+documents_registry.json

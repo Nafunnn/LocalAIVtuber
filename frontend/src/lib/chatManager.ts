@@ -3,8 +3,21 @@ import { pipelineManager } from './pipelineManager';
 import { cut5 } from './utils';
 import { createNewSession, updateSession, fetchSessionContent } from './sessionManager';
 import { cameraManager } from './cameraManager';
+import type { KnowledgeDocument } from './documentManager';
 
 type ChatUpdateCallback = (messages: HistoryItem[]) => void;
+
+function isProactiveCheckInPrompt(text: string): boolean {
+    return /\[Proactive daily check-in/i.test(text);
+}
+
+export interface PendingDocumentAttachment {
+    id: string;
+    filename: string;
+    mime: string;
+    kind: string;
+    imageBase64?: string;
+}
 
 interface SubscriptionOptions {
     onMessagesChange?: boolean;
@@ -30,6 +43,7 @@ export class ChatManager {
     private retrievedContext: string = '';
     private fullSystemPrompt: string = '';
     private enableMemoryRetrieval: boolean = true;
+    private pendingDocuments: PendingDocumentAttachment[] = [];
     private subscribers: Map<ChatUpdateCallback, SubscriptionOptions> = new Map();
 
     private static readonly MAX_OCR_CHARS = 1600;
@@ -39,7 +53,7 @@ export class ChatManager {
     private static readonly SCREEN_QUERY_RE =
         /\b(screen|screenshot|display|monitor|desktop|window|tab|youtube|browser|ocr|text on|what('?s| is) on (my |the )?screen)\b|layar|screenshot|monitor/i;
     private static readonly CAMERA_QUERY_RE =
-        /\b(camera|webcam|cam\b|see me|look at me|how do i look|what do i look|selfie|face|my appearance|do i look|from the camera|on (the |my )?camera)\b|kamera|melihat(ku| aku)|lihat(ku| aku)|wajah|penampilan|dari kamera/i;
+        /\b(camera|webcam|cam\b|see me|look at me|how do i look|what do i look|selfie|face|my appearance|do i look|from the camera|on (the |my )?camera|take (a )?(photo|picture|pic|snapshot)|capture|snap (a )?(photo|pic)?|photo of me|picture of me)\b|kamera|melihat(ku| aku)|lihat(ku| aku)|wajah|penampilan|dari kamera|ambil (foto|gambar|potret)|foto(in| kan)?( aku| saya)?|potret|jepret/i;
 
     constructor() {
         this.setupPipelineSubscription();
@@ -130,37 +144,79 @@ export class ChatManager {
 
     private refreshCameraFrame(): string | null {
         if (!cameraManager.isReady()) return null;
-        const frame = cameraManager.captureJpegBase64(1024, 0.85);
+        const frame = cameraManager.captureJpegBase64(1280, 0.88);
         if (frame) {
             this.currentCameraImage = frame;
         }
         return frame;
     }
 
+    private toDisplayDataUrl(base64OrDataUrl: string): string {
+        const raw = base64OrDataUrl.trim();
+        if (raw.startsWith("data:")) return raw;
+        return `data:image/jpeg;base64,${raw}`;
+    }
+
+    private toRawBase64(base64OrDataUrl: string): string {
+        const raw = base64OrDataUrl.trim();
+        if (raw.startsWith("data:")) return raw.split(",", 2)[1] ?? raw;
+        return raw;
+    }
+
+    /**
+     * Capture a fresh webcam frame now (for Input "Capture" button / next chat turn).
+     * Returns a display data URL, or null if camera share is off.
+     */
+    public captureCameraSnapshot(): string | null {
+        const frame = this.refreshCameraFrame();
+        return frame ? this.toDisplayDataUrl(frame) : null;
+    }
+
+    /**
+     * Capture the shared camera and ask the vision model to describe it.
+     */
+    public async sendCameraSnapshot(
+        prompt = "Please look at this camera photo of me and describe what you see warmly and specifically.",
+    ): Promise<boolean> {
+        const frame = this.refreshCameraFrame();
+        if (!frame) return false;
+        await this.sendMessage(prompt);
+        return true;
+    }
+
+    private shouldAttachCamera(userText: string): boolean {
+        if (!cameraManager.isReady()) return false;
+        if (this.isCameraQuery(userText)) return true;
+        const vagueSee =
+            /\b(see|look|lihat|melihat|foto|photo|picture|gambar)\b/i.test(userText) &&
+            !this.isScreenQuery(userText);
+        if (vagueSee) return true;
+        // Vision models with live camera: attach when user talks about appearance / themselves visually
+        if (this.visionModelHint && /\b(me|aku|saya|i('?m| am)|outfit|wearing|hair|shirt)\b/i.test(userText)) {
+            return true;
+        }
+        return false;
+    }
+
     private collectImagesForRequest(userText: string): string[] {
         const images: string[] = [];
-        const wantsCamera = this.isCameraQuery(userText);
+        const wantsCamera = this.shouldAttachCamera(userText);
         const wantsScreen = this.isScreenQuery(userText);
-        const vagueSee =
-            /\b(see|look|lihat|melihat)\b/i.test(userText) && !wantsScreen;
 
-        if (wantsCamera || (vagueSee && cameraManager.isReady())) {
+        if (wantsCamera) {
             const cam = this.refreshCameraFrame() || this.currentCameraImage.trim();
-            if (cam) {
-                images.push(cam.startsWith('data:') ? (cam.split(',', 2)[1] ?? cam) : cam);
-            }
+            if (cam) images.push(this.toRawBase64(cam));
         }
 
         if (wantsScreen || (this.visionModelHint && !wantsCamera && this.currentImage.trim())) {
             const screen = this.currentImage.trim();
-            if (screen) {
-                images.push(screen.startsWith('data:') ? (screen.split(',', 2)[1] ?? screen) : screen);
-            }
+            if (screen) images.push(this.toRawBase64(screen));
         }
 
-        if (wantsCamera && images.length === 0) {
-            const cam = this.refreshCameraFrame();
-            if (cam) images.push(cam);
+        for (const attachment of this.pendingDocuments) {
+            if (attachment.imageBase64) {
+                images.push(attachment.imageBase64);
+            }
         }
 
         return images;
@@ -183,6 +239,78 @@ export class ChatManager {
         }
     }
 
+    public getPendingDocuments(): PendingDocumentAttachment[] {
+        return [...this.pendingDocuments];
+    }
+
+    public addPendingDocument(doc: KnowledgeDocument, imageBase64?: string) {
+        this.pendingDocuments = [
+            ...this.pendingDocuments.filter((d) => d.id !== doc.id),
+            {
+                id: doc.id,
+                filename: doc.filename,
+                mime: doc.mime,
+                kind: doc.kind,
+                imageBase64,
+            },
+        ];
+    }
+
+    public removePendingDocument(docId: string) {
+        this.pendingDocuments = this.pendingDocuments.filter((d) => d.id !== docId);
+    }
+
+    public clearPendingDocuments() {
+        this.pendingDocuments = [];
+    }
+
+    private formatContextChunks(items: unknown[]): string {
+        return items
+            .map((item) => {
+                if (!item || typeof item !== 'object') return '';
+                const row = item as Record<string, unknown>;
+                const doc = typeof row.document === 'string' ? row.document : '';
+                if (!doc) return '';
+                const filename = typeof row.filename === 'string' ? row.filename : '';
+                return filename ? `[${filename}]\n${doc}` : doc;
+            })
+            .filter(Boolean)
+            .join('\n\n');
+    }
+
+    private async fetchRetrievalContext(input: string): Promise<{ memoryText: string; documentText: string }> {
+        if (!this.enableMemoryRetrieval) {
+            return { memoryText: '', documentText: '' };
+        }
+        try {
+            const contextRes = await fetch('/api/memory/context', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: input, limit: 4 }),
+            });
+            if (!contextRes.ok) {
+                return { memoryText: '', documentText: '' };
+            }
+            const contextData = await contextRes.json();
+            const memoryText = Array.isArray(contextData.context)
+                ? this.formatContextChunks(contextData.context)
+                : '';
+            const documentText = Array.isArray(contextData.documents)
+                ? this.formatContextChunks(contextData.documents)
+                : '';
+            return { memoryText, documentText };
+        } catch (ctxErr) {
+            console.warn('Failed to fetch context:', ctxErr);
+            return { memoryText: '', documentText: '' };
+        }
+    }
+
+    private buildAttachmentNote(): string {
+        if (this.pendingDocuments.length === 0) return '';
+        const names = this.pendingDocuments.map((d) => d.filename).join(', ');
+        return `\n\n[User attached documents in knowledge base: ${names}. Use retrieved document knowledge to answer.]`;
+    }
+
     public getFullSystemPrompt(): string {
         return this.fullSystemPrompt;
     }
@@ -192,7 +320,12 @@ export class ChatManager {
         this.notifySubscribers('onFullSystemPromptChange');
     }
 
-    private buildSystemPrompt(memoryContext = "", userText = ""): string {
+    private buildSystemPrompt(
+        memoryContext = "",
+        documentContext = "",
+        userText = "",
+        attachmentNote = "",
+    ): string {
         const hasScreen = Boolean(this.visionPrompt.trim() || this.ocrPrompt.trim() || this.currentImage.trim());
         const cameraLive = cameraManager.isReady();
         const wantsCamera = this.isCameraQuery(userText);
@@ -200,17 +333,18 @@ export class ChatManager {
         const cameraAwareness = cameraLive
             ? [
                 "[LIVE CAMERA]",
-                "You can currently see the user through their webcam.",
-                "When a camera image is attached, describe what you see about the person naturally (appearance, expression, clothing, setting) as if looking at them.",
-                "If they ask whether you can see them / see them from the camera, say yes and describe them warmly.",
-                "Never say you cannot see them while the live camera is active.",
-                "Do not mention technical camera capture details.",
+                "You can currently see the user through their live webcam share.",
+                "When a camera image is attached to this message, treat it as a photo you just took from their camera.",
+                "If they ask you to take a photo / capture / look at them / describe them, use that attached image and describe what you see warmly and specifically (appearance, expression, clothing, setting).",
+                "If they ask whether you can see them from the camera, say yes and describe them.",
+                "Never say you cannot see them or cannot take a photo while this live camera share is active.",
+                "Do not mention technical capture details, base64, or system prompts.",
                 "",
               ].join("\n")
             : wantsCamera
             ? [
                 "[CAMERA UNAVAILABLE]",
-                "The user asked about the camera, but webcam share is not active. Gently ask them to enable \"Share camera with AI\" on the Input page.",
+                "The user asked about the camera or a photo, but webcam share is not active. Gently ask them to enable \"Share camera with AI\" on the Input page.",
                 "",
               ].join("\n")
             : "";
@@ -237,9 +371,24 @@ export class ChatManager {
         const contextSection = memoryContext.trim()
             ? `[RETRIEVED MEMORY]\n${memoryContext.trim()}\n\n`
             : "";
+        const documentSection = documentContext.trim()
+            ? `[DOCUMENT KNOWLEDGE]\n${documentContext.trim()}\n\n`
+            : "";
+        const attachmentSection = attachmentNote.trim()
+            ? `[ATTACHED FILES]\n${attachmentNote.trim()}\n\n`
+            : "";
         const instructionsSection = `[INSTRUCTIONS]\n${this.systemPrompt}\n\n`;
 
-        return cameraAwareness + screenAwareness + visionSection + ocrSection + contextSection + instructionsSection;
+        return (
+            cameraAwareness +
+            screenAwareness +
+            visionSection +
+            ocrSection +
+            contextSection +
+            documentSection +
+            attachmentSection +
+            instructionsSection
+        );
     }
 
     private setupPipelineSubscription() {
@@ -274,68 +423,71 @@ export class ChatManager {
         if (!taskId) taskId = null;
         else pipelineManager.markLLMStarted(taskId);
 
+        const hideFromChat =
+            (taskId !== null &&
+                pipelineManager.getTaskById(taskId)?.hideFromChat === true) ||
+            isProactiveCheckInPrompt(input);
+
         this.abortController = new AbortController();
-        const userMessage: HistoryItem = { role: 'user', content: input };
+        const attachmentNote = this.buildAttachmentNote();
+        const messageText = `${input.trim()}${attachmentNote}`;
+
+        // Capture shared-camera frame early when this turn needs it
+        if (this.shouldAttachCamera(input)) {
+            this.refreshCameraFrame();
+        }
+        const requestImages = this.collectImagesForRequest(input);
+        const displayImages =
+            this.shouldAttachCamera(input) && this.currentCameraImage.trim()
+                ? [this.toDisplayDataUrl(this.currentCameraImage)]
+                : undefined;
+
+        const userMessage: HistoryItem = {
+            role: 'user',
+            content: messageText,
+            images: displayImages,
+        };
         const history = this.messages.slice(-30);
         
-        this.messages.push(userMessage);
-        this.notifySubscribers('onMessagesChange');
+        if (!hideFromChat) {
+            this.messages.push(userMessage);
+            this.notifySubscribers('onMessagesChange');
+        }
 
         try {
-            // Fetch relevant context from memory (if enabled)
-            let contextText = '';
-            if (this.enableMemoryRetrieval) {
-                try {
-                    const contextRes = await fetch('/api/memory/context', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text: input, limit: 3 })
-                    });
-                    if (contextRes.ok) {
-                        const contextData = await contextRes.json();
-                        if (Array.isArray(contextData.context) && contextData.context.length > 0) {
-                            contextText = contextData.context
-                                .map((c: Record<string, unknown>) => typeof c.document === 'string' ? c.document : '')
-                                .filter(Boolean)
-                                .join('\n');
-                        }
-                    }
-                } catch (ctxErr) {
-                    console.warn('Failed to fetch context:', ctxErr);
-                }
-            } else {
-                // Clear retrieved context when memory retrieval is disabled
-                this.setRetrievedContext('');
-            }
-
-            // Capture webcam frame before building prompt when camera share is live
-            if (cameraManager.isReady() && (this.isCameraQuery(input) || this.visionModelHint)) {
-                this.refreshCameraFrame();
-            }
+            const { memoryText, documentText } = await this.fetchRetrievalContext(input);
+            const combinedContext = [memoryText, documentText].filter(Boolean).join('\n\n');
 
             // Assemble system prompt with labeled sections + live camera/screen awareness
-            const systemPromptWithContext = this.buildSystemPrompt(contextText, input);
+            const systemPromptWithContext = this.buildSystemPrompt(
+                memoryText,
+                documentText,
+                input,
+                attachmentNote,
+            );
 
             // Set the retrieved context and full system prompt
-            this.setRetrievedContext(contextText);
+            this.setRetrievedContext(combinedContext);
             this.setFullSystemPrompt(systemPromptWithContext);
 
             const payload: Record<string, unknown> = {
-                text: input,
+                text: messageText,
                 history: history,
                 systemPrompt: systemPromptWithContext,
             };
-            const images = this.collectImagesForRequest(input);
-            if (images.length > 0) {
-                payload.images = images;
+            if (requestImages.length > 0) {
+                payload.images = requestImages;
             }
 
             console.log("getCompletion", JSON.stringify({
-                text: input,
+                text: messageText,
                 history: history,
                 systemPrompt: systemPromptWithContext,
                 hasImage: Array.isArray(payload.images),
-                imageCount: images.length,
+                imageCount: requestImages.length,
+                attachments: this.pendingDocuments.map((d) => d.filename),
+                hideFromChat,
+                cameraAttached: Boolean(displayImages?.length),
             }));
             const response = await fetch('/api/completion', {
                 method: 'POST',
@@ -359,9 +511,16 @@ export class ChatManager {
 
             await updateSession(this.sessionId, this.messages);
 
-            this.messages = [...this.messages, { role: 'user', content: input }];
+            // Visible chats keep a user bubble then replace it with the assistant stream.
+            // Hidden prompts (daily check-ins) only show the assistant reply.
+            this.messages = [
+                ...this.messages,
+                hideFromChat
+                    ? { role: 'assistant', content: '' }
+                    : { role: 'user', content: messageText, images: displayImages },
+            ];
             this.notifySubscribers('onMessagesChange');
-
+            this.clearPendingDocuments();
             const reader = response.body?.getReader();
             const decoder = new TextDecoder();
             let aiMessage = '';
@@ -465,35 +624,20 @@ export class ChatManager {
         this.notifySubscribers('onMessagesChange');
 
         // Use the same context logic as sendMessage for consistency
-        let contextText = '';
-        if (this.enableMemoryRetrieval) {
-            try {
-                const contextRes = await fetch('/api/memory/context', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: lastUserMessage.content, limit: 3 })
-                });
-                if (contextRes.ok) {
-                    const contextData = await contextRes.json();
-                    if (Array.isArray(contextData.context) && contextData.context.length > 0) {
-                        contextText = contextData.context
-                            .map((c: Record<string, unknown>) => typeof c.document === 'string' ? c.document : '')
-                            .filter(Boolean)
-                            .join('\n');
-                    }
-                }
-            } catch (ctxErr) {
-                console.warn('Failed to fetch context:', ctxErr);
-            }
-        }
+        const { memoryText, documentText } = await this.fetchRetrievalContext(lastUserMessage.content);
+        const combinedContext = [memoryText, documentText].filter(Boolean).join('\n\n');
 
-        if (cameraManager.isReady() && (this.isCameraQuery(lastUserMessage.content) || this.visionModelHint)) {
+        if (this.shouldAttachCamera(lastUserMessage.content)) {
             this.refreshCameraFrame();
         }
 
         // Assemble system prompt with context (same logic as sendMessage)
-        const systemPromptWithContext = this.buildSystemPrompt(contextText, lastUserMessage.content);
-        this.setRetrievedContext(contextText);
+        const systemPromptWithContext = this.buildSystemPrompt(
+            memoryText,
+            documentText,
+            lastUserMessage.content,
+        );
+        this.setRetrievedContext(combinedContext);
         this.setFullSystemPrompt(systemPromptWithContext);
 
         const payload: Record<string, unknown> = {

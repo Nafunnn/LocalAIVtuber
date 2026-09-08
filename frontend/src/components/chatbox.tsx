@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Send, Square, Plus, MoreHorizontal, Edit, Trash2 } from 'lucide-react';
+import { Send, Square, Plus, MoreHorizontal, Edit, Trash2, Paperclip, X } from 'lucide-react';
 import { useSettings } from '@/context/SettingsContext';
 import EditableChatHistory from './editable-chat-history';
 import { HistoryItem } from '@/lib/types';
@@ -10,6 +10,13 @@ import { fetchSessions, createNewSession, deleteSession, updateSessionTitle } fr
 import { Session } from '@/lib/types';
 import { SidePanel } from './side-panel';
 import { SidebarMenuButton } from './ui/sidebar';
+import {
+    uploadDocument,
+    readFileAsBase64,
+    isImageFile,
+    ACCEPTED_DOCUMENT_TYPES,
+} from '@/lib/documentManager';
+import { toast } from 'sonner';
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -28,6 +35,9 @@ const Chatbox = () => {
     const [selectedSession, setSelectedSession] = useState<string | null>(null);
     const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
     const [editingTitle, setEditingTitle] = useState<string>('');
+    const [pendingDocs, setPendingDocs] = useState(chatManager.getPendingDocuments());
+    const [uploadingDoc, setUploadingDoc] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const getSessions = async () => {
         const data = await fetchSessions();
@@ -142,12 +152,41 @@ const Chatbox = () => {
     }, [displayedMessages]);
 
     const handleSend = async (input: string) => {
-        if (input.trim() === '') return;
+        if (input.trim() === '' && pendingDocs.length === 0) return;
         setIsProcessing(true);
         setInput('');
         await chatManager.sendMessage(input);
+        setPendingDocs(chatManager.getPendingDocuments());
         setIsProcessing(false);
         inputRef.current?.focus(); // Focus after sending
+    };
+
+    const handleAttachFiles = async (files: FileList | null) => {
+        if (!files?.length) return;
+        setUploadingDoc(true);
+        try {
+            for (const file of Array.from(files)) {
+                const result = await uploadDocument(file);
+                if (!result?.document) continue;
+                let imageBase64: string | undefined;
+                if (isImageFile(file)) {
+                    imageBase64 = await readFileAsBase64(file);
+                }
+                chatManager.addPendingDocument(result.document, imageBase64);
+                toast.success(`Attached ${file.name}`);
+            }
+            setPendingDocs(chatManager.getPendingDocuments());
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Failed to attach file');
+        } finally {
+            setUploadingDoc(false);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
+    const handleRemoveAttachment = (docId: string) => {
+        chatManager.removePendingDocument(docId);
+        setPendingDocs(chatManager.getPendingDocuments());
     };
 
     useEffect(() => {
@@ -243,7 +282,45 @@ const Chatbox = () => {
                 <div ref={messagesEndRef}></div>
             </div>
             <div className="shrink-0 rounded-t-lg bg-background pb-2">
+                {pendingDocs.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-2 px-1">
+                        {pendingDocs.map((doc) => (
+                            <div
+                                key={doc.id}
+                                className="flex items-center gap-1 rounded-full border bg-secondary px-3 py-1 text-xs"
+                            >
+                                <span className="max-w-[180px] truncate">{doc.filename}</span>
+                                <button
+                                    type="button"
+                                    className="text-muted-foreground hover:text-foreground"
+                                    onClick={() => handleRemoveAttachment(doc.id)}
+                                    aria-label={`Remove ${doc.filename}`}
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
                 <div className='mb-2 flex w-full items-center space-x-2 rounded-lg bg-secondary px-4 py-4'>
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        className="hidden"
+                        multiple
+                        accept={ACCEPTED_DOCUMENT_TYPES}
+                        onChange={(e) => void handleAttachFiles(e.target.files)}
+                    />
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        disabled={isProcessing || uploadingDoc}
+                        onClick={() => fileInputRef.current?.click()}
+                        title="Attach document"
+                    >
+                        <Paperclip className="h-4 w-4" />
+                    </Button>
                     <Input
                         ref={inputRef}
                         disabled={isProcessing}
@@ -252,7 +329,7 @@ const Chatbox = () => {
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={(e) => e.key === "Enter" && handleSend(input)}
                     />
-                    <Button onClick={() => handleSend(input)}>
+                    <Button onClick={() => handleSend(input)} disabled={uploadingDoc}>
                         {!isProcessing ? <Send></Send> : <Square></Square>}
                     </Button>
                 </div>

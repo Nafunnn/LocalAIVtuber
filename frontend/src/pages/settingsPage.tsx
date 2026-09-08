@@ -1,5 +1,6 @@
 import { Panel } from "@/components/panel";
 import SettingSwitch from "@/components/setting-switch";
+import DailyRemindersSettings from "@/components/daily-reminders-settings";
 import SettingDropdown from "@/components/setting-dropdown";
 import { useSettings } from "@/context/SettingsContext";
 import { useCallback, useEffect, useState } from "react";
@@ -210,6 +211,8 @@ function SettingsPage() {
                     label="Idle humming"
                     description="Occasionally hum, mutter, or softly call you when quiet (about every 1–3 minutes)."
                 />
+
+                <DailyRemindersSettings />
                 {!isOllamaCloud && (
                     <SettingSwitch
                         id="llm.keep_model_loaded"

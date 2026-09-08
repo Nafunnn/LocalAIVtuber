@@ -6,6 +6,10 @@ import { useSettings } from "@/context/SettingsContext";
 import { chatManager, ChatManager } from "@/lib/chatManager";
 import { ttsManager } from "@/lib/ttsManager";
 import { idleAmbientSpeech } from "@/lib/idleAmbientSpeech";
+import {
+  dailyReminderScheduler,
+  normalizeDailyReminders,
+} from "@/lib/dailyReminderScheduler";
 
 export function PushToTalkOverlay() {
   const { settings } = useSettings();
@@ -17,6 +21,10 @@ export function PushToTalkOverlay() {
     idleAmbientSpeech.start({
       enabled: settings["frontend.idleSpeech.enabled"] !== false,
     });
+    dailyReminderScheduler.start({
+      enabled: settings["frontend.dailyReminders.enabled"] !== false,
+      items: normalizeDailyReminders(settings["frontend.dailyReminders.items"]),
+    });
     pushToTalkController.bind();
     return () => {
       pushToTalkController.unbind();
@@ -25,6 +33,10 @@ export function PushToTalkOverlay() {
 
   useEffect(() => {
     idleAmbientSpeech.setEnabled(settings["frontend.idleSpeech.enabled"] !== false);
+    dailyReminderScheduler.setEnabled(settings["frontend.dailyReminders.enabled"] !== false);
+    dailyReminderScheduler.setItems(
+      normalizeDailyReminders(settings["frontend.dailyReminders.items"])
+    );
   }, [settings]);
 
   useEffect(() => {

@@ -15,7 +15,9 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { voiceInputManager, type VoiceInputState } from "@/lib/voiceInputManager";
 import { cameraManager, type CameraState } from "@/lib/cameraManager";
+import { chatManager } from "@/lib/chatManager";
 import { useSettings } from "@/context/SettingsContext";
+import { Camera } from "lucide-react";
 
 interface MicrophoneDevice {
   index: number;
@@ -142,7 +144,23 @@ export default function VoiceStreamer() {
     await updateSetting(LANGUAGE_SETTING, value);
   };
 
+  const [capturing, setCapturing] = useState(false);
   const isRecording = voiceState.recording;
+
+  const handleCaptureForAi = async () => {
+    if (!cameraState.enabled || !cameraState.ready || capturing) return;
+    setCapturing(true);
+    try {
+      const ok = await chatManager.sendCameraSnapshot(
+        "Please look at this camera photo of me and describe what you see warmly and specifically."
+      );
+      if (!ok) {
+        window.alert('Camera is not ready. Enable "Share camera with AI" first.');
+      }
+    } finally {
+      setCapturing(false);
+    }
+  };
 
   return (
     <Panel className="max-w-4xl mx-auto">
@@ -249,9 +267,21 @@ export default function VoiceStreamer() {
               <p className="text-sm text-destructive">{cameraState.error}</p>
             )}
             {cameraState.enabled && cameraState.ready && (
-              <p className="text-xs text-muted-foreground">
-                Live — ask “Can you see me from the camera?” or “How do I look?”
-              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void handleCaptureForAi()}
+                  disabled={capturing}
+                >
+                  <Camera className="mr-1.5 h-4 w-4" />
+                  {capturing ? "Capturing…" : "Take photo for AI"}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Live — ask “Can you see me?” / “Ambil foto aku” or use this button
+                </p>
+              </div>
             )}
           </div>
         </div>

@@ -1,2 +1,3 @@
 # Extra Python deps for LocalAIVtuber features (install into backend/venv)
 mcp>=1.0.0
+pypdf>=4.0.0

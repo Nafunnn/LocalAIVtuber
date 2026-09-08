@@ -1,6 +1,8 @@
 export type HistoryItem = {
     role: "assistant" | "user";
     content: string;
+    /** Optional display-only image data URLs (e.g. camera snapshots). */
+    images?: string[];
 }
 
 export interface Session {

@@ -134,10 +134,24 @@ export default function EditableChatHistory({ messages, sessionId, onUpdate, onC
                                 </div>
                             </div>
                         ) : (
-                            <ChatMarkdown
-                                content={message.content}
-                                className={message.role === 'user' ? 'opacity-80' : 'opacity-100'}
-                            />
+                            <>
+                                {message.images && message.images.length > 0 && (
+                                    <div className="mb-2 flex flex-wrap gap-2">
+                                        {message.images.map((src, imgIdx) => (
+                                            <img
+                                                key={`${index}-img-${imgIdx}`}
+                                                src={src}
+                                                alt="Camera capture"
+                                                className="max-h-40 max-w-full rounded-md border object-cover"
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                                <ChatMarkdown
+                                    content={message.content}
+                                    className={message.role === 'user' ? 'opacity-80' : 'opacity-100'}
+                                />
+                            </>
                         )}
                     </div>
                     {editingMessageIndex !== index && (

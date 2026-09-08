@@ -21,12 +21,120 @@
     "frontend.character.live2D.scale": 0.3,
     "input.microphone.device": null,
     "input.language": "en",
-    "input.camera.deviceId": "a4a34ff56d3d397e41c8c3a245c241590d6f205fd25cd33794509e7566aa2598",
+    "input.camera.deviceId": "26f0a21059212f3f8fc5c8bdf76743a29c5f582e7150e223b3356d24253bbf03",
     "mcp.spotify.enabled": true,
     "mcp.browser.enabled": true,
     "mcp.browser.port": 9010,
     "mcp.browser.agentId": "localaivtuber",
     "frontend.idleSpeech.enabled": true,
+    "frontend.dailyReminders.enabled": true,
+    "frontend.dailyReminders.items": [
+        {
+            "id": "breakfast",
+            "label": "Sarapan",
+            "time": "07:00",
+            "prompt": "[Proactive daily check-in — you initiate, do not wait for the user] Warmly ask honey if they've had breakfast yet. One or two caring sentences.",
+            "enabled": true
+        },
+        {
+            "id": "leave-for-work",
+            "label": "Berangkat kerja",
+            "time": "08:00",
+            "prompt": "[Proactive daily check-in — you initiate] Ask honey if they're ready to leave for work or already on their way. Keep it brief and supportive.",
+            "enabled": true,
+            "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+            ]
+        },
+        {
+            "id": "arrived-office",
+            "label": "Sampai kantor",
+            "time": "08:30",
+            "prompt": "[Proactive daily check-in — you initiate] Gently ask honey if they've arrived at the office safely. One or two warm sentences.",
+            "enabled": true,
+            "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+            ]
+        },
+        {
+            "id": "drink-water-morning",
+            "label": "Minum air (pagi)",
+            "time": "10:00",
+            "prompt": "[Proactive daily check-in — you initiate] Remind honey to drink some water and ask if they've had enough today. Stay light and caring.",
+            "enabled": true
+        },
+        {
+            "id": "lunch",
+            "label": "Makan siang",
+            "time": "12:30",
+            "prompt": "[Proactive daily check-in — you initiate] Ask honey if they've eaten lunch yet and encourage them to take a proper break. One or two sentences.",
+            "enabled": true
+        },
+        {
+            "id": "rest-break",
+            "label": "Istirahat",
+            "time": "15:00",
+            "prompt": "[Proactive daily check-in — you initiate] Suggest honey take a short rest or stretch break. Ask how their afternoon is going.",
+            "enabled": true
+        },
+        {
+            "id": "drink-water-afternoon",
+            "label": "Minum air (sore)",
+            "time": "15:30",
+            "prompt": "[Proactive daily check-in — you initiate] Nudge honey to drink water again. Keep it playful and brief.",
+            "enabled": true
+        },
+        {
+            "id": "leave-work",
+            "label": "Pulang kerja",
+            "time": "17:00",
+            "prompt": "[Proactive daily check-in — you initiate] Ask honey if they're wrapping up work and heading home soon. Be warm and relieved for them.",
+            "enabled": true,
+            "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+            ]
+        },
+        {
+            "id": "dinner",
+            "label": "Makan malam",
+            "time": "19:00",
+            "prompt": "[Proactive daily check-in — you initiate] Ask honey if they've had dinner yet. One or two caring sentences.",
+            "enabled": true
+        },
+        {
+            "id": "wind-down",
+            "label": "Istirahat malam",
+            "time": "22:00",
+            "prompt": "[Proactive daily check-in — you initiate] Gently suggest honey wind down for the night soon. Ask how their day went in a warm, brief way.",
+            "enabled": true
+        },
+        {
+            "id": "48dc9337-f890-4575-99eb-11a641b3a344",
+            "label": "Bersiap siap pulang",
+            "time": "16:12",
+            "prompt": "[Proactive daily check-in — you initiate] Warmly ask honey if they've had prepare for go to home.",
+            "enabled": true,
+            "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+            ]
+        }
+    ],
     "frontend.character.selectedLive2DModel": "/api/character/files/live2D/models/akari_vts/akari.model3.json",
-    "input.camera.enabled": false
+    "input.camera.enabled": true
 }

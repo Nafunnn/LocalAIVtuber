@@ -29,6 +29,8 @@ from services.Input.VisionInput import VisionInput
 from services.TTS.TTS import TTS
 from services.Memory.Memory import Memory
 from services.Memory.HistoryStore import HistoryStore
+from services.Memory.DocumentStore import DocumentStore
+from services.Memory.document_parser import extract_document_text, detect_kind
 from services.Character.characterManager import CharacterManager
 from services.lib.LAV_logger import logger
 from services.lib.port_forward import create_proxy_middleware
@@ -88,6 +90,7 @@ voice_input:VoiceInput = VoiceInput()
 llm:LLM = LLM()
 memory:Memory = Memory()
 history_store:HistoryStore = HistoryStore()
+document_store:DocumentStore = DocumentStore()
 tts:TTS = TTS()
 vision_input:VisionInput = VisionInput(device="auto")
 character_manager:CharacterManager = CharacterManager()
@@ -963,6 +966,114 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "mcp.browser.port": 9010,
     "mcp.browser.agentId": "localaivtuber",
     "frontend.idleSpeech.enabled": True,
+    "frontend.dailyReminders.enabled": True,
+    "frontend.dailyReminders.items": [
+        {
+            "id": "breakfast",
+            "label": "Sarapan",
+            "time": "07:00",
+            "prompt": (
+                "[Proactive daily check-in — you initiate, do not wait for the user] "
+                "Warmly ask honey if they've had breakfast yet. One or two caring sentences."
+            ),
+            "enabled": True,
+        },
+        {
+            "id": "leave-for-work",
+            "label": "Berangkat kerja",
+            "time": "07:45",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Ask honey if they're ready to leave for work or already on their way. "
+                "Keep it brief and supportive."
+            ),
+            "enabled": True,
+            "days": [1, 2, 3, 4, 5],
+        },
+        {
+            "id": "arrived-office",
+            "label": "Sampai kantor",
+            "time": "08:30",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Gently ask honey if they've arrived at the office safely. One or two warm sentences."
+            ),
+            "enabled": True,
+            "days": [1, 2, 3, 4, 5],
+        },
+        {
+            "id": "drink-water-morning",
+            "label": "Minum air (pagi)",
+            "time": "10:00",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Remind honey to drink some water and ask if they've had enough today. Stay light and caring."
+            ),
+            "enabled": True,
+        },
+        {
+            "id": "lunch",
+            "label": "Makan siang",
+            "time": "12:30",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Ask honey if they've eaten lunch yet and encourage them to take a proper break. "
+                "One or two sentences."
+            ),
+            "enabled": True,
+        },
+        {
+            "id": "rest-break",
+            "label": "Istirahat",
+            "time": "15:00",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Suggest honey take a short rest or stretch break. Ask how their afternoon is going."
+            ),
+            "enabled": True,
+        },
+        {
+            "id": "drink-water-afternoon",
+            "label": "Minum air (sore)",
+            "time": "15:30",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Nudge honey to drink water again. Keep it playful and brief."
+            ),
+            "enabled": True,
+        },
+        {
+            "id": "leave-work",
+            "label": "Pulang kerja",
+            "time": "17:00",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Ask honey if they're wrapping up work and heading home soon. Be warm and relieved for them."
+            ),
+            "enabled": True,
+            "days": [1, 2, 3, 4, 5],
+        },
+        {
+            "id": "dinner",
+            "label": "Makan malam",
+            "time": "19:00",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Ask honey if they've had dinner yet. One or two caring sentences."
+            ),
+            "enabled": True,
+        },
+        {
+            "id": "wind-down",
+            "label": "Istirahat malam",
+            "time": "22:00",
+            "prompt": (
+                "[Proactive daily check-in — you initiate] "
+                "Gently suggest honey wind down for the night soon. Ask how their day went in a warm, brief way."
+            ),
+            "enabled": True,
+        },
+    ],
 }
 
 class SettingsManager:
@@ -1359,11 +1470,188 @@ class QueryContextRequest(BaseModel):
     text: str
     limit: int = 3
 
+MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+
+
+def _index_document_record(doc_id: str) -> Dict[str, Any]:
+    doc = document_store.get_document(doc_id)
+    if not doc:
+        raise ValueError("Document not found")
+
+    data = document_store.read_file_bytes(doc_id)
+    if not data:
+        raise ValueError("Document file missing on disk")
+
+    memory.delete_document(doc_id)
+
+    extracted, kind = extract_document_text(
+        data,
+        doc.get("filename", "document"),
+        doc.get("mime", ""),
+        vision_input=vision_input,
+    )
+    if not extracted.strip():
+        raise ValueError("No text could be extracted from this file")
+
+    indexed = memory.insert_documents(
+        extracted,
+        doc_id=doc_id,
+        filename=doc.get("filename", "document"),
+        mime=doc.get("mime", ""),
+    )
+    if indexed is None:
+        raise RuntimeError("Failed to index document in vector store")
+
+    now = datetime.now().isoformat()
+    document_store.update_document(
+        doc_id,
+        indexed=True,
+        indexed_at=now,
+        char_count=len(extracted),
+        kind=kind,
+        error=None,
+    )
+    updated = document_store.get_document(doc_id) or {}
+    updated["preview"] = extracted[:1200]
+    return updated
+
+
+@app.post("/api/documents/upload")
+async def upload_document(file: UploadFile = File(...)):
+    try:
+        filename = file.filename or "document"
+        mime = file.content_type or "application/octet-stream"
+        kind = detect_kind(filename, mime)
+        if kind == "unknown":
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "Unsupported file type. Supported: PDF, TXT, Markdown, JPEG, PNG, WebP."
+                },
+            )
+
+        data = await file.read()
+        if len(data) > MAX_DOCUMENT_BYTES:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"File too large. Max size is {MAX_DOCUMENT_BYTES // (1024*1024)} MB."},
+            )
+        if not data:
+            return JSONResponse(status_code=400, content={"error": "Empty file"})
+
+        record = document_store.create_document(filename, mime, data)
+        doc_id = record["id"]
+        try:
+            updated = _index_document_record(doc_id)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "document": {
+                        "id": updated.get("id", doc_id),
+                        "filename": updated.get("filename", filename),
+                        "mime": updated.get("mime", mime),
+                        "size": updated.get("size", len(data)),
+                        "indexed": updated.get("indexed", False),
+                        "char_count": updated.get("char_count", 0),
+                        "kind": updated.get("kind", kind),
+                        "error": updated.get("error"),
+                    },
+                    "preview": updated.get("preview", "")[:1200],
+                },
+            )
+        except Exception as index_err:
+            document_store.update_document(doc_id, indexed=False, error=str(index_err))
+            logger.error(f"Document index failed for {doc_id}: {index_err}", exc_info=True)
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Uploaded but indexing failed: {index_err}"},
+            )
+    except Exception as e:
+        logger.error(f"Document upload failed: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to upload document"})
+
+
+@app.get("/api/documents")
+async def list_documents():
+    try:
+        return JSONResponse(status_code=200, content={"documents": document_store.list_documents()})
+    except Exception as e:
+        logger.error(f"Failed to list documents: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to list documents"})
+
+
+@app.get("/api/documents/{doc_id}")
+async def get_document_detail(doc_id: str):
+    try:
+        doc = document_store.get_document(doc_id)
+        if not doc:
+            return JSONResponse(status_code=404, content={"error": "Document not found"})
+        data = document_store.read_file_bytes(doc_id)
+        preview = ""
+        if data:
+            try:
+                preview, _ = extract_document_text(
+                    data,
+                    doc.get("filename", "document"),
+                    doc.get("mime", ""),
+                    vision_input=vision_input,
+                )
+                preview = preview[:2000]
+            except Exception as e:
+                preview = f"[Preview unavailable: {e}]"
+        public = {
+            "id": doc.get("id"),
+            "filename": doc.get("filename"),
+            "mime": doc.get("mime"),
+            "size": doc.get("size"),
+            "created_at": doc.get("created_at"),
+            "indexed": bool(doc.get("indexed")),
+            "indexed_at": doc.get("indexed_at"),
+            "char_count": doc.get("char_count", 0),
+            "kind": doc.get("kind", ""),
+            "error": doc.get("error"),
+        }
+        return JSONResponse(status_code=200, content={"document": public, "preview": preview})
+    except Exception as e:
+        logger.error(f"Failed to get document {doc_id}: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to get document"})
+
+
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    try:
+        doc = document_store.get_document(doc_id)
+        if not doc:
+            return JSONResponse(status_code=404, content={"error": "Document not found"})
+        memory.delete_document(doc_id)
+        document_store.delete_document(doc_id)
+        return JSONResponse(status_code=200, content={"success": True})
+    except Exception as e:
+        logger.error(f"Failed to delete document {doc_id}: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to delete document"})
+
+
+@app.post("/api/documents/{doc_id}/reindex")
+async def reindex_document(doc_id: str):
+    try:
+        if not document_store.get_document(doc_id):
+            return JSONResponse(status_code=404, content={"error": "Document not found"})
+        updated = _index_document_record(doc_id)
+        return JSONResponse(status_code=200, content={"document": updated, "success": True})
+    except ValueError as e:
+        document_store.update_document(doc_id, indexed=False, error=str(e))
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        logger.error(f"Failed to reindex document {doc_id}: {e}", exc_info=True)
+        document_store.update_document(doc_id, indexed=False, error=str(e))
+        return JSONResponse(status_code=500, content={"error": "Failed to reindex document"})
+
+
 @app.post("/api/memory/context")
 async def query_memory_context(request: QueryContextRequest):
     try:
-        response = memory.query(text=request.text, limit=request.limit)
-        return JSONResponse(status_code=200, content={"context": response})
+        response = memory.query_memory_context(text=request.text, limit=request.limit)
+        return JSONResponse(status_code=200, content=response)
     except Exception as e:
         logger.error(f"Error querying memory context: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "Failed to query memory context"})

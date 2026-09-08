@@ -19,6 +19,8 @@ export type Task = {
   input?: string;
   response: TaskResponse[];
   status: TaskStatus;
+  /** If true, the user/input prompt is not shown in the chat UI. */
+  hideFromChat?: boolean;
   interruptionState?: {
     tts: boolean;
     llm: boolean;

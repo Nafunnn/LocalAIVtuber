@@ -9,9 +9,11 @@ from ..lib.LAV_logger import logger
 import datetime
 from typing import List, Dict, Any, Optional
 from .ChatChunker import ChatChunker
+from .DocumentChunker import DocumentChunker
 
 class Memory:
     MESSAGE_COLLECTION_NAME = "memory_collection"
+    DOCUMENT_COLLECTION_NAME = "document_collection"
     
     def __init__(self, temp = False):
         self.current_module_directory = os.path.dirname(__file__)
@@ -28,6 +30,29 @@ class Memory:
             logger.error(f"Collection {self.MESSAGE_COLLECTION_NAME} does not exist")
             return False
         return True
+
+    def ensure_document_collection(self) -> bool:
+        try:
+            if not self.client.collection_exists(self.DOCUMENT_COLLECTION_NAME):
+                # Fastembed add() creates the collection on first insert; nothing else required.
+                logger.info(
+                    f"Document collection {self.DOCUMENT_COLLECTION_NAME} will be created on first insert"
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to check document collection: {e}")
+            return False
+
+    def _result_to_context_item(self, item) -> Dict[str, Any]:
+        payload = item.metadata if hasattr(item, "metadata") else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        document = payload.get("document", "")
+        if not document and hasattr(item, "document"):
+            document = getattr(item, "document", "") or ""
+        out = dict(payload)
+        out["document"] = document
+        return out
 
 
     def insert_history(self, history: List[Dict[str, str]], session_id: str = "", 
@@ -111,11 +136,117 @@ class Memory:
             query_text = text,
             limit = limit
         )
-        # logger.debug(f"Search result: {search_result}")
-        result = []
-        for s in search_result:
-            result.append(s.metadata)
-        return result
+        return [self._result_to_context_item(s) for s in search_result]
+
+    def insert_documents(
+        self,
+        text: str,
+        doc_id: str,
+        filename: str,
+        mime: str = "",
+    ):
+        if not text or not text.strip():
+            logger.warning(f"No text to index for document {doc_id}")
+            return None
+        if not self.ensure_document_collection():
+            return None
+
+        try:
+            chunker = DocumentChunker()
+            chunks = chunker.chunk_text(text, doc_id, filename, mime=mime)
+            if not chunks:
+                return None
+
+            documents = []
+            metadata_list = []
+            ids = []
+            time_str = '{:%Y-%m-%d %H:%M:%S.%f}'.format(datetime.datetime.now())
+
+            for i, chunk in enumerate(chunks):
+                chunk_text = chunk.get("text", "")
+                if not chunk_text.strip():
+                    continue
+                chunk_metadata = {
+                    "doc_id": doc_id,
+                    "filename": filename,
+                    "mime": mime,
+                    "time": time_str,
+                    "chunk_index": i,
+                    "total_chunks": len(chunks),
+                    "source": "document",
+                }
+                if "metadata" in chunk:
+                    chunk_metadata.update(chunk["metadata"])
+
+                documents.append(chunk_text)
+                metadata_list.append(chunk_metadata)
+                ids.append(str(uuid.uuid4()))
+
+            if not documents:
+                return None
+
+            response = self.client.add(
+                collection_name=self.DOCUMENT_COLLECTION_NAME,
+                documents=documents,
+                metadata=metadata_list,
+                ids=ids,
+            )
+            logger.info(
+                f"Indexed document {filename} ({doc_id}) with {len(documents)} chunks"
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error indexing document {doc_id}: {e}")
+            return None
+
+    def query_documents(self, text, limit=3) -> list:
+        if not self.client.collection_exists(self.DOCUMENT_COLLECTION_NAME):
+            return []
+        try:
+            search_result = self.client.query(
+                collection_name=self.DOCUMENT_COLLECTION_NAME,
+                query_text=text,
+                limit=limit,
+            )
+            return [self._result_to_context_item(s) for s in search_result]
+        except Exception as e:
+            logger.error(f"Error querying documents: {e}")
+            return []
+
+    def delete_document(self, doc_id: str) -> bool:
+        if not self.client.collection_exists(self.DOCUMENT_COLLECTION_NAME):
+            return True
+        try:
+            points = self.client.scroll(
+                collection_name=self.DOCUMENT_COLLECTION_NAME,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="doc_id",
+                            match=MatchValue(value=doc_id),
+                        )
+                    ]
+                ),
+                limit=2000,
+            )[0]
+            if points:
+                point_ids = [point.id for point in points]
+                self.client.delete(
+                    collection_name=self.DOCUMENT_COLLECTION_NAME,
+                    points_selector=point_ids,
+                )
+                logger.info(f"Deleted {len(point_ids)} document chunks for {doc_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting document vectors {doc_id}: {e}")
+            return False
+
+    def query_memory_context(self, text: str, limit: int = 3) -> Dict[str, list]:
+        chat_limit = max(1, limit // 2) if limit > 1 else 1
+        doc_limit = max(1, limit - chat_limit)
+        chat = self.query(text, limit=chat_limit)
+        documents = self.query_documents(text, limit=doc_limit)
+        return {"context": chat, "documents": documents}
 
     def get(self, limit = 50, offset = 0):
         if not self.check_collection_exists(): return None
