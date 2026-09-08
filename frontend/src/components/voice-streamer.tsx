@@ -19,6 +19,13 @@ import {
   cameraPresenceWatcher,
   type CameraPresenceState,
 } from "@/lib/cameraPresenceWatcher";
+import {
+  deserializeEmbeddings,
+  ownerFaceRecognizer,
+  OWNER_ENROLLMENT_SAMPLES,
+  serializeEmbeddings,
+  type OwnerFaceState,
+} from "@/lib/ownerFaceRecognizer";
 import { chatManager } from "@/lib/chatManager";
 import { useSettings } from "@/context/SettingsContext";
 import { Camera } from "lucide-react";
@@ -41,6 +48,8 @@ const CAMERA_SETTING = "input.camera.deviceId";
 const CAMERA_ENABLED_SETTING = "input.camera.enabled";
 const PRESENCE_WATCH_SETTING = "input.camera.presenceWatch.enabled";
 const PRESENCE_COOLDOWN_SETTING = "input.camera.presenceWatch.cooldownMinutes";
+const OWNER_FACE_EMBEDDINGS_SETTING = "input.camera.ownerFace.embeddings";
+const OWNER_FACE_THRESHOLD_SETTING = "input.camera.ownerFace.matchThreshold";
 const LANGUAGE_SETTING = "input.language";
 
 export default function VoiceStreamer() {
@@ -49,6 +58,9 @@ export default function VoiceStreamer() {
   const [cameraState, setCameraState] = useState<CameraState>(cameraManager.getState());
   const [presenceState, setPresenceState] = useState<CameraPresenceState>(
     cameraPresenceWatcher.getState()
+  );
+  const [ownerFaceState, setOwnerFaceState] = useState<OwnerFaceState>(
+    ownerFaceRecognizer.getState()
   );
   const [transcriptions, setTranscriptions] = useState<string[]>(voiceInputManager.getTranscriptions());
   const [microphones, setMicrophones] = useState<MicrophoneDevice[]>([]);
@@ -86,6 +98,19 @@ export default function VoiceStreamer() {
   useEffect(() => {
     return cameraPresenceWatcher.subscribe(setPresenceState);
   }, []);
+
+  useEffect(() => {
+    return ownerFaceRecognizer.subscribe(setOwnerFaceState);
+  }, []);
+
+  useEffect(() => {
+    ownerFaceRecognizer.setReferenceEmbeddings(
+      deserializeEmbeddings(settings[OWNER_FACE_EMBEDDINGS_SETTING])
+    );
+    if (typeof settings[OWNER_FACE_THRESHOLD_SETTING] === "number") {
+      ownerFaceRecognizer.setMatchThreshold(settings[OWNER_FACE_THRESHOLD_SETTING]);
+    }
+  }, [settings]);
 
   useEffect(() => {
     cameraManager.attachPreview(videoRef.current);
@@ -183,6 +208,8 @@ export default function VoiceStreamer() {
   };
 
   const [capturing, setCapturing] = useState(false);
+  const [enrollingFace, setEnrollingFace] = useState(false);
+  const [enrollProgress, setEnrollProgress] = useState("");
   const isRecording = voiceState.recording;
 
   const handleCaptureForAi = async () => {
@@ -198,6 +225,64 @@ export default function VoiceStreamer() {
     } finally {
       setCapturing(false);
     }
+  };
+
+  const handleEnrollOwnerFace = async () => {
+    if (!cameraState.enabled || !cameraState.ready || enrollingFace) return;
+    const video = cameraManager.getVideoElement();
+    if (!video) {
+      window.alert('Camera is not ready. Enable "Share camera with AI" first.');
+      return;
+    }
+
+    setEnrollingFace(true);
+    setEnrollProgress(`Look at the camera — capturing ${OWNER_ENROLLMENT_SAMPLES} samples…`);
+    try {
+      const captured: Float32Array[] = [];
+      for (let i = 0; i < OWNER_ENROLLMENT_SAMPLES; i += 1) {
+        setEnrollProgress(`Sample ${i + 1} of ${OWNER_ENROLLMENT_SAMPLES}…`);
+        const embedding = await ownerFaceRecognizer.captureEmbedding(video);
+        if (embedding) captured.push(embedding);
+        if (i < OWNER_ENROLLMENT_SAMPLES - 1) {
+          await new Promise((r) => window.setTimeout(r, 700));
+        }
+      }
+
+      if (captured.length < 2) {
+        window.alert(
+          "Could not detect your face clearly enough. Face the camera in good light and try again."
+        );
+        return;
+      }
+
+      const serialized = serializeEmbeddings(captured);
+      await updateSetting(OWNER_FACE_EMBEDDINGS_SETTING, serialized);
+      ownerFaceRecognizer.setReferenceEmbeddings(captured);
+      setEnrollProgress(`Saved ${captured.length} face samples.`);
+    } finally {
+      setEnrollingFace(false);
+      window.setTimeout(() => setEnrollProgress(""), 4000);
+    }
+  };
+
+  const handleClearOwnerFace = async () => {
+    await updateSetting(OWNER_FACE_EMBEDDINGS_SETTING, []);
+    ownerFaceRecognizer.clearEnrollment();
+    setEnrollProgress("");
+  };
+
+  const presenceStatusText = () => {
+    if (!presenceWatchEnabled) return "";
+    if (!presenceState.ownerEnrolled) {
+      return "Register your face below to enable owner detection";
+    }
+    if (presenceState.ownerVisible) return "Owner in frame — verified";
+    if (presenceState.personVisible) return "Person in frame — not the registered owner";
+    if (presenceState.modelReady && presenceState.faceModelReady) {
+      return "Scanning — waiting for you to enter";
+    }
+    if (presenceState.error) return `Detection unavailable: ${presenceState.error}`;
+    return "Loading detection models… (first run downloads weights)";
   };
 
   return (
@@ -326,11 +411,11 @@ export default function VoiceStreamer() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <Label htmlFor="presence-watch-toggle" className="text-sm">
-                    Watch for person entering
+                    Watch for owner entering
                   </Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    When the room is empty and someone enters the frame, the AI greets you
-                    proactively (uses object detection + scene change).
+                    COCO-SSD detects a person, then face recognition confirms it is you
+                    before the AI greets you proactively.
                   </p>
                 </div>
                 <Switch
@@ -360,19 +445,49 @@ export default function VoiceStreamer() {
                       ))}
                     </SelectContent>
                   </Select>
-                  <span className="text-xs text-muted-foreground">
-                    {presenceState.modelReady
-                      ? presenceState.personVisible
-                        ? "Person in frame"
-                        : presenceState.scanning
-                          ? "Scanning — waiting for someone to enter"
-                          : "Model ready"
-                      : presenceState.error
-                        ? `Detection unavailable: ${presenceState.error}`
-                        : "Loading detection model… (first run downloads weights)"}
-                  </span>
+                  <span className="text-xs text-muted-foreground">{presenceStatusText()}</span>
                 </div>
               )}
+
+              <div className="border-t pt-3 space-y-2">
+                <div>
+                  <Label className="text-sm">Owner face registration</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Required for proactive greetings. Captures {OWNER_ENROLLMENT_SAMPLES} samples
+                    while you look at the camera.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleEnrollOwnerFace()}
+                    disabled={!cameraState.enabled || !cameraState.ready || enrollingFace}
+                  >
+                    {enrollingFace ? "Registering…" : "Register my face"}
+                  </Button>
+                  {ownerFaceState.enrolled && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleClearOwnerFace()}
+                      disabled={enrollingFace}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    {ownerFaceState.enrolled
+                      ? `Enrolled (${ownerFaceState.embeddingCount} samples)`
+                      : "Not enrolled"}
+                  </span>
+                </div>
+                {enrollProgress && (
+                  <p className="text-xs text-muted-foreground">{enrollProgress}</p>
+                )}
+              </div>
             </div>
           </div>
         </div>

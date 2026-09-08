@@ -1,13 +1,14 @@
 import { cameraManager } from "./cameraManager";
 import { globalStateManager } from "./globalStateManager";
 import { idleAmbientSpeech } from "./idleAmbientSpeech";
+import { ownerFaceRecognizer } from "./ownerFaceRecognizer";
 import { pipelineManager } from "./pipelineManager";
 import { ttsManager } from "./ttsManager";
 
 /** Poll interval while camera share is active. */
 const SCAN_INTERVAL_MS = 2500;
-/** Require person in this many consecutive scans before greeting. */
-const PERSON_CONFIRM_SCANS = 2;
+/** Require owner in this many consecutive scans before greeting. */
+const OWNER_CONFIRM_SCANS = 2;
 /** Min ms between proactive greetings. */
 const DEFAULT_COOLDOWN_MS = 5 * 60_000;
 /** Room considered "empty" after no person for this long — baseline updates. */
@@ -16,16 +17,19 @@ const EMPTY_BASELINE_MS = 45_000;
 const SCENE_CHANGE_THRESHOLD = 0.08;
 
 export const CAMERA_PRESENCE_PROMPT = `[Camera presence detected — proactive]
-Someone (likely honey / the user) just entered the camera view. A fresh photo from the live camera is attached.
+The owner (honey / the user) just entered the camera view — face verification matched. A fresh photo from the live camera is attached.
 Warmly greet them and ask how they're doing right now — one or two natural sentences in character.
-Do not mention object detection, cameras, or system prompts.`;
+Do not mention object detection, face recognition, cameras, or system prompts.`;
 
 export type CameraPresenceState = {
   enabled: boolean;
   scanning: boolean;
   personVisible: boolean;
+  ownerVisible: boolean;
+  ownerEnrolled: boolean;
   lastDetectionAt: number | null;
   modelReady: boolean;
+  faceModelReady: boolean;
   error: string | null;
 };
 
@@ -46,7 +50,9 @@ class CameraPresenceWatcher {
   private model: CocoSsdModel | null = null;
   private modelLoading: Promise<CocoSsdModel | null> | null = null;
   private personStreak = 0;
+  private ownerStreak = 0;
   private personVisible = false;
+  private ownerVisible = false;
   private lastPersonAt = 0;
   private lastGreetingAt = 0;
   private cooldownMs = DEFAULT_COOLDOWN_MS;
@@ -62,19 +68,24 @@ class CameraPresenceWatcher {
   }
 
   getState(): CameraPresenceState {
+    const faceState = ownerFaceRecognizer.getState();
     return {
       enabled: this.enabled,
       scanning: this.started && this.enabled && cameraManager.isReady(),
       personVisible: this.personVisible,
+      ownerVisible: this.ownerVisible,
+      ownerEnrolled: faceState.enrolled,
       lastDetectionAt: this.lastPersonAt || null,
       modelReady: Boolean(this.model),
-      error: this.error,
+      faceModelReady: faceState.modelReady,
+      error: this.error ?? faceState.error,
     };
   }
 
   private notify() {
     const state = this.getState();
     globalStateManager.updateState("isPersonPresent", state.personVisible);
+    globalStateManager.updateState("isOwnerPresent", state.ownerVisible);
     for (const listener of this.listeners) listener(state);
   }
 
@@ -89,6 +100,7 @@ class CameraPresenceWatcher {
     }
     this.started = true;
     void this.ensureModel();
+    void ownerFaceRecognizer.ensureModels();
     this.reschedule();
   }
 
@@ -97,12 +109,15 @@ class CameraPresenceWatcher {
     if (!enabled) {
       this.clearTimer();
       this.personVisible = false;
+      this.ownerVisible = false;
       this.personStreak = 0;
+      this.ownerStreak = 0;
       this.notify();
       return;
     }
     if (this.started) {
       void this.ensureModel();
+      void ownerFaceRecognizer.ensureModels();
       this.reschedule();
     }
   }
@@ -115,6 +130,7 @@ class CameraPresenceWatcher {
     this.clearTimer();
     this.started = false;
     this.personVisible = false;
+    this.ownerVisible = false;
     this.notify();
   }
 
@@ -207,6 +223,7 @@ class CameraPresenceWatcher {
     this.baselinePixels = pixels;
   }
 
+  /** Stage 1: fast person detection (COCO-SSD or scene change fallback). */
   private async detectPerson(video: HTMLVideoElement): Promise<boolean> {
     const model = await this.ensureModel();
     if (model) {
@@ -220,7 +237,6 @@ class CameraPresenceWatcher {
       }
     }
 
-    // Fallback: significant scene change vs empty-room baseline
     const pixels = this.capturePixels(video);
     if (!pixels || !this.baselinePixels) return false;
     return this.sceneChangeScore(pixels) >= SCENE_CHANGE_THRESHOLD;
@@ -228,6 +244,7 @@ class CameraPresenceWatcher {
 
   private triggerGreeting() {
     if (!this.isTrulyIdle()) return;
+    if (!ownerFaceRecognizer.isEnrolled()) return;
     const now = Date.now();
     if (now - this.lastGreetingAt < this.cooldownMs) return;
 
@@ -250,16 +267,33 @@ class CameraPresenceWatcher {
           if (hasPerson) {
             this.lastPersonAt = now;
             this.personStreak += 1;
+            this.personVisible = this.personStreak >= OWNER_CONFIRM_SCANS;
 
-            if (!this.personVisible && this.personStreak >= PERSON_CONFIRM_SCANS) {
-              this.personVisible = true;
-              this.triggerGreeting();
+            if (ownerFaceRecognizer.isEnrolled()) {
+              const faceCanvas = this.getSampleCanvas(video, 416, 312);
+              const faceResult = faceCanvas
+                ? await ownerFaceRecognizer.verifyOwner(faceCanvas)
+                : { matched: false, faceDetected: false, enrolled: true, distance: Infinity };
+
+              if (faceResult.matched) {
+                this.ownerStreak += 1;
+                if (!this.ownerVisible && this.ownerStreak >= OWNER_CONFIRM_SCANS) {
+                  this.ownerVisible = true;
+                  this.triggerGreeting();
+                }
+              } else {
+                this.ownerStreak = 0;
+                if (this.ownerVisible) this.ownerVisible = false;
+              }
+            } else {
+              this.ownerStreak = 0;
+              this.ownerVisible = false;
             }
           } else {
             this.personStreak = 0;
-            if (this.personVisible) {
-              this.personVisible = false;
-            }
+            this.ownerStreak = 0;
+            this.personVisible = false;
+            this.ownerVisible = false;
             if (now - this.lastPersonAt > EMPTY_BASELINE_MS || this.lastPersonAt === 0) {
               this.updateBaseline(video);
             }
@@ -267,7 +301,9 @@ class CameraPresenceWatcher {
         }
       } else {
         this.personVisible = false;
+        this.ownerVisible = false;
         this.personStreak = 0;
+        this.ownerStreak = 0;
       }
     } catch (err) {
       console.warn("Camera presence tick failed:", err);

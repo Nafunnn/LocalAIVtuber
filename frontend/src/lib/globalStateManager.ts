@@ -7,6 +7,7 @@ interface GlobalState {
     isAutoCapture: boolean;
     isBrowserActive: boolean;
     isPersonPresent: boolean;
+    isOwnerPresent: boolean;
 }
 
 class GlobalStateManager {
@@ -17,7 +18,8 @@ class GlobalStateManager {
     isAutoCapture: false,
     isBrowserActive: false,
     isPersonPresent: false,
-  };
+    isOwnerPresent: false,
+};
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private listeners: Map<keyof GlobalState, Set<GlobalStateListener<any>>> = new Map();

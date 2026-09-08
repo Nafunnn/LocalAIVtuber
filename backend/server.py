@@ -964,6 +964,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "input.camera.enabled": False,
     "input.camera.presenceWatch.enabled": False,
     "input.camera.presenceWatch.cooldownMinutes": 5,
+    "input.camera.ownerFace.embeddings": [],
+    "input.camera.ownerFace.matchThreshold": 0.55,
     "mcp.spotify.enabled": False,
     "mcp.browser.enabled": False,
     "mcp.browser.port": 9010,

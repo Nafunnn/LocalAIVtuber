@@ -11,6 +11,10 @@ import {
   normalizeDailyReminders,
 } from "@/lib/dailyReminderScheduler";
 import { cameraPresenceWatcher } from "@/lib/cameraPresenceWatcher";
+import {
+  deserializeEmbeddings,
+  ownerFaceRecognizer,
+} from "@/lib/ownerFaceRecognizer";
 
 export function PushToTalkOverlay() {
   const { settings } = useSettings();
@@ -55,6 +59,12 @@ export function PushToTalkOverlay() {
       cameraPresenceWatcher.setCooldownMinutes(
         settings["input.camera.presenceWatch.cooldownMinutes"]
       );
+    }
+    ownerFaceRecognizer.setReferenceEmbeddings(
+      deserializeEmbeddings(settings["input.camera.ownerFace.embeddings"])
+    );
+    if (typeof settings["input.camera.ownerFace.matchThreshold"] === "number") {
+      ownerFaceRecognizer.setMatchThreshold(settings["input.camera.ownerFace.matchThreshold"]);
     }
   }, [settings]);
 

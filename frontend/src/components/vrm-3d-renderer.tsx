@@ -210,7 +210,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
       wasBrowserActiveRef.current = active;
     });
 
-    const unsubPerson = globalStateManager.subscribe("isPersonPresent", (present) => {
+    const unsubPerson = globalStateManager.subscribe("isOwnerPresent", (present) => {
       if (present && !wasPersonPresentRef.current) {
         playGesture(pickGreetingGesture(), { override: true });
         vrmFacialController.setEmotion("happy", 5000);
