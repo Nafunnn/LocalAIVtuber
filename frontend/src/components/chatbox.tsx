@@ -116,7 +116,31 @@ const Chatbox = () => {
 
     useEffect(() => {
         chatManager.setEnableMemoryRetrieval(settings["llm.enableMemoryRetrieval"] ?? true);
-    }, [settings["llm.enableMemoryRetrieval"]]);
+        chatManager.setMemoryConfig({
+            episodicLimit:
+                typeof settings["memory.retrieval.episodicLimit"] === "number"
+                    ? settings["memory.retrieval.episodicLimit"]
+                    : 5,
+            documentLimit:
+                typeof settings["memory.retrieval.documentLimit"] === "number"
+                    ? settings["memory.retrieval.documentLimit"]
+                    : 3,
+            factLimit:
+                typeof settings["memory.retrieval.factLimit"] === "number"
+                    ? settings["memory.retrieval.factLimit"]
+                    : 12,
+            skillLimit:
+                typeof settings["memory.retrieval.skillLimit"] === "number"
+                    ? settings["memory.retrieval.skillLimit"]
+                    : 3,
+        });
+    }, [
+        settings["llm.enableMemoryRetrieval"],
+        settings["memory.retrieval.episodicLimit"],
+        settings["memory.retrieval.documentLimit"],
+        settings["memory.retrieval.factLimit"],
+        settings["memory.retrieval.skillLimit"],
+    ]);
 
     useEffect(() => {
         const modelId = typeof settings["llm.ollama.model"] === "string"

@@ -44,6 +44,12 @@ export class ChatManager {
     private retrievedContext: string = '';
     private fullSystemPrompt: string = '';
     private enableMemoryRetrieval: boolean = true;
+    private memoryConfig = {
+        episodicLimit: 5,
+        documentLimit: 3,
+        factLimit: 12,
+        skillLimit: 3,
+    };
     private pendingDocuments: PendingDocumentAttachment[] = [];
     private subscribers: Map<ChatUpdateCallback, SubscriptionOptions> = new Map();
 
@@ -244,10 +250,13 @@ export class ChatManager {
 
     public setEnableMemoryRetrieval(enabled: boolean) {
         this.enableMemoryRetrieval = enabled;
-        // Clear retrieved context immediately when memory retrieval is disabled
         if (!enabled) {
             this.setRetrievedContext('');
         }
+    }
+
+    public setMemoryConfig(config: Partial<typeof this.memoryConfig>) {
+        this.memoryConfig = { ...this.memoryConfig, ...config };
     }
 
     public getPendingDocuments(): PendingDocumentAttachment[] {
@@ -289,18 +298,29 @@ export class ChatManager {
             .join('\n\n');
     }
 
-    private async fetchRetrievalContext(input: string): Promise<{ memoryText: string; documentText: string }> {
+    private async fetchRetrievalContext(input: string): Promise<{
+        memoryText: string;
+        documentText: string;
+        userModelText: string;
+        skillsText: string;
+    }> {
         if (!this.enableMemoryRetrieval) {
-            return { memoryText: '', documentText: '' };
+            return { memoryText: '', documentText: '', userModelText: '', skillsText: '' };
         }
         try {
             const contextRes = await fetch('/api/memory/context', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: input, limit: 4 }),
+                body: JSON.stringify({
+                    text: input,
+                    episodic_limit: this.memoryConfig.episodicLimit,
+                    document_limit: this.memoryConfig.documentLimit,
+                    fact_limit: this.memoryConfig.factLimit,
+                    skill_limit: this.memoryConfig.skillLimit,
+                }),
             });
             if (!contextRes.ok) {
-                return { memoryText: '', documentText: '' };
+                return { memoryText: '', documentText: '', userModelText: '', skillsText: '' };
             }
             const contextData = await contextRes.json();
             const memoryText = Array.isArray(contextData.context)
@@ -309,10 +329,14 @@ export class ChatManager {
             const documentText = Array.isArray(contextData.documents)
                 ? this.formatContextChunks(contextData.documents)
                 : '';
-            return { memoryText, documentText };
+            const userModelText =
+                typeof contextData.user_model === 'string' ? contextData.user_model : '';
+            const skillsText =
+                typeof contextData.skills_text === 'string' ? contextData.skills_text : '';
+            return { memoryText, documentText, userModelText, skillsText };
         } catch (ctxErr) {
             console.warn('Failed to fetch context:', ctxErr);
-            return { memoryText: '', documentText: '' };
+            return { memoryText: '', documentText: '', userModelText: '', skillsText: '' };
         }
     }
 
@@ -336,6 +360,8 @@ export class ChatManager {
         documentContext = "",
         userText = "",
         attachmentNote = "",
+        userModelContext = "",
+        skillsContext = "",
     ): string {
         const hasScreen = Boolean(this.visionPrompt.trim() || this.ocrPrompt.trim() || this.currentImage.trim());
         const cameraLive = cameraManager.isReady();
@@ -381,8 +407,14 @@ export class ChatManager {
         const ocrSection = this.ocrPrompt.trim()
             ? `[SCREEN TEXT]\n${this.ocrPrompt.trim()}\n\n`
             : "";
+        const userModelSection = userModelContext.trim()
+            ? `${userModelContext.trim()}\n\n`
+            : "";
+        const skillsSection = skillsContext.trim()
+            ? `${skillsContext.trim()}\n\n`
+            : "";
         const contextSection = memoryContext.trim()
-            ? `[RETRIEVED MEMORY]\n${memoryContext.trim()}\n\n`
+            ? `[EPISODIC MEMORY — past conversations]\n${memoryContext.trim()}\n\n`
             : "";
         const documentSection = documentContext.trim()
             ? `[DOCUMENT KNOWLEDGE]\n${documentContext.trim()}\n\n`
@@ -397,6 +429,8 @@ export class ChatManager {
             screenAwareness +
             visionSection +
             ocrSection +
+            userModelSection +
+            skillsSection +
             contextSection +
             documentSection +
             attachmentSection +
@@ -469,8 +503,11 @@ export class ChatManager {
         }
 
         try {
-            const { memoryText, documentText } = await this.fetchRetrievalContext(input);
-            const combinedContext = [memoryText, documentText].filter(Boolean).join('\n\n');
+            const { memoryText, documentText, userModelText, skillsText } =
+                await this.fetchRetrievalContext(input);
+            const combinedContext = [userModelText, skillsText, memoryText, documentText]
+                .filter(Boolean)
+                .join('\n\n');
 
             // Assemble system prompt with labeled sections + live camera/screen awareness
             const systemPromptWithContext = this.buildSystemPrompt(
@@ -478,6 +515,8 @@ export class ChatManager {
                 documentText,
                 input,
                 attachmentNote,
+                userModelText,
+                skillsText,
             );
 
             // Set the retrieved context and full system prompt
@@ -638,18 +677,23 @@ export class ChatManager {
         this.notifySubscribers('onMessagesChange');
 
         // Use the same context logic as sendMessage for consistency
-        const { memoryText, documentText } = await this.fetchRetrievalContext(lastUserMessage.content);
-        const combinedContext = [memoryText, documentText].filter(Boolean).join('\n\n');
+        const { memoryText, documentText, userModelText, skillsText } =
+            await this.fetchRetrievalContext(lastUserMessage.content);
+        const combinedContext = [userModelText, skillsText, memoryText, documentText]
+            .filter(Boolean)
+            .join('\n\n');
 
         if (this.shouldAttachCamera(lastUserMessage.content, null)) {
             this.refreshCameraFrame();
         }
 
-        // Assemble system prompt with context (same logic as sendMessage)
         const systemPromptWithContext = this.buildSystemPrompt(
             memoryText,
             documentText,
             lastUserMessage.content,
+            '',
+            userModelText,
+            skillsText,
         );
         this.setRetrievedContext(combinedContext);
         this.setFullSystemPrompt(systemPromptWithContext);

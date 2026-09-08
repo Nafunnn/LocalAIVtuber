@@ -76,6 +76,24 @@ export function PushToTalkOverlay() {
     if (typeof settings["llm.enableMemoryRetrieval"] === "boolean") {
       chatManager.setEnableMemoryRetrieval(settings["llm.enableMemoryRetrieval"]);
     }
+    chatManager.setMemoryConfig({
+      episodicLimit:
+        typeof settings["memory.retrieval.episodicLimit"] === "number"
+          ? settings["memory.retrieval.episodicLimit"]
+          : 5,
+      documentLimit:
+        typeof settings["memory.retrieval.documentLimit"] === "number"
+          ? settings["memory.retrieval.documentLimit"]
+          : 3,
+      factLimit:
+        typeof settings["memory.retrieval.factLimit"] === "number"
+          ? settings["memory.retrieval.factLimit"]
+          : 12,
+      skillLimit:
+        typeof settings["memory.retrieval.skillLimit"] === "number"
+          ? settings["memory.retrieval.skillLimit"]
+          : 3,
+    });
     const modelId = typeof settings["llm.ollama.model"] === "string"
       ? settings["llm.ollama.model"]
       : "";

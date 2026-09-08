@@ -54,7 +54,7 @@ export default function SessionDetail({ sessionId, onBack }: SessionDetailProps)
           createdAt: sessionData.created_at,
           indexed: sessionData.indexed,
         },
-        messages: sessionData.history.map((msg, index) => ({
+        messages: (sessionData.history ?? []).map((msg, index) => ({
           id: `m${index + 1}`,
           ...msg,
           timestamp: sessionData.created_at // Using created_at as timestamp for now
@@ -99,7 +99,7 @@ export default function SessionDetail({ sessionId, onBack }: SessionDetailProps)
             role: msg.role,
             content: msg.content
           }))
-          const currentHistory = sessionData.history.map((msg) => ({
+          const currentHistory = (sessionData.history ?? []).map((msg) => ({
             role: msg.role,
             content: msg.content
           }))
@@ -183,7 +183,7 @@ export default function SessionDetail({ sessionId, onBack }: SessionDetailProps)
               </div>
               <div className="flex items-center">
                 <Database className="h-4 w-4 mr-2" />
-                Messages: {sessionData.history.length}
+                Messages: {(sessionData.history ?? []).length}
               </div>
             </div>
           </div>
@@ -200,7 +200,7 @@ export default function SessionDetail({ sessionId, onBack }: SessionDetailProps)
           <TabsContent value="chat">
             <Card className="p-4">
               <EditableChatHistory 
-                messages={sessionData.history}
+                messages={sessionData.history ?? []}
                 sessionId={sessionData.id}
                 onContinue={() => {}}
                 onRegenerate={() => {}}

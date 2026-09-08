@@ -136,8 +136,8 @@
         }
     ],
     "frontend.character.selectedLive2DModel": "/api/character/files/live2D/models/akari_vts/akari.model3.json",
-    "input.camera.enabled": true,
-    "input.camera.presenceWatch.enabled": true,
+    "input.camera.enabled": false,
+    "input.camera.presenceWatch.enabled": false,
     "input.camera.presenceWatch.cooldownMinutes": 1,
     "input.camera.ownerFace.embeddings": [
         [

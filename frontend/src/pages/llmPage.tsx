@@ -57,6 +57,12 @@ function LLMPage() {
                     <SettingSwitch id="llm.showMonitor" label="Show Monitor" description="Show the LLM monitor in the right side of the screen."/>
                     <SettingSwitch id="llm.enableMemoryRetrieval" label="Enable Memory Retrieval" description="Retrieve relevant context from memory when making LLM requests."/>
                     
+                    <div className="w-full border-t pt-4 space-y-3">
+                        <label className="text-sm font-medium block">Four-tier memory</label>
+                        <SettingSwitch id="memory.autoIndex.enabled" label="Auto-index chats" description="Automatically add new messages to episodic memory (Tier 2) after each reply."/>
+                        <SettingSwitch id="memory.learningLoop.enabled" label="Learning loop" description="Extract user facts and patterns from conversations into long-term memory."/>
+                    </div>
+                    
                     <div className="w-full border-t pt-4">
                         <label className="text-sm font-medium mb-4 block">Sampling Parameters</label>
                         <div className="grid grid-cols-1 gap-6">

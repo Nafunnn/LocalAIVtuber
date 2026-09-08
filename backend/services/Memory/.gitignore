@@ -2,3 +2,5 @@ data/*
 chat_sessions/*
 document_files/*
 documents_registry.json
+user_model.json
+skill_library.json

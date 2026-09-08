@@ -30,6 +30,10 @@ from services.TTS.TTS import TTS
 from services.Memory.Memory import Memory
 from services.Memory.HistoryStore import HistoryStore
 from services.Memory.DocumentStore import DocumentStore
+from services.Memory.UserModelStore import UserModelStore
+from services.Memory.SkillLibraryStore import SkillLibraryStore
+from services.Memory.MemoryConsolidator import MemoryConsolidator
+from services.Memory.MemoryEngine import MemoryEngine
 from services.Memory.document_parser import extract_document_text, detect_kind
 from services.Character.characterManager import CharacterManager
 from services.lib.LAV_logger import logger
@@ -46,7 +50,7 @@ from services.LLM.LLM import LLM
 from pydantic import BaseModel
 from datetime import datetime
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import mss
 import traceback
 import threading
@@ -91,6 +95,10 @@ llm:LLM = LLM()
 memory:Memory = Memory()
 history_store:HistoryStore = HistoryStore()
 document_store:DocumentStore = DocumentStore()
+user_model_store:UserModelStore = UserModelStore()
+skill_library_store:SkillLibraryStore = SkillLibraryStore()
+memory_consolidator:MemoryConsolidator = MemoryConsolidator(user_model_store, skill_library_store)
+memory_engine:MemoryEngine = MemoryEngine(memory, user_model_store, skill_library_store)
 tts:TTS = TTS()
 vision_input:VisionInput = VisionInput(device="auto")
 character_manager:CharacterManager = CharacterManager()
@@ -949,6 +957,13 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "llm.seed": -1,
     "llm.showMonitor": True,
     "llm.enableMemoryRetrieval": True,
+    "memory.autoIndex.enabled": True,
+    "memory.learningLoop.enabled": True,
+    "memory.retrieval.episodicLimit": 5,
+    "memory.retrieval.documentLimit": 3,
+    "memory.retrieval.factLimit": 12,
+    "memory.retrieval.skillLimit": 3,
+    "memory.userModel.profileLimit": 8,
     "tts.provider": "gpt-sovits",
     "tts.voice": "leaf",
     "tts.gptsovits.voice": "leaf",
@@ -1261,11 +1276,29 @@ async def update_chat_session(request: UpdateSessionRequest):
     try:
         success = history_store.update_session(request.session_id, request.history)
         if success:
+            asyncio.create_task(
+                _background_memory_maintenance(request.session_id, request.history)
+            )
             return JSONResponse(status_code=200, content={"message": "Session updated successfully"})
         return JSONResponse(status_code=404, content={"error": "Session not found"})
     except Exception as e:
         logger.error(f"Error updating chat session: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "Failed to update chat session"})
+
+
+async def _background_memory_maintenance(session_id: str, history: List[Dict[str, str]]) -> None:
+    """Auto-index episodic memory + learning loop after each chat save."""
+    def work() -> None:
+        settings = settings_manager.settings
+        if settings.get("memory.autoIndex.enabled", True):
+            memory_engine.incremental_index_session(history_store, session_id, history)
+        if settings.get("memory.learningLoop.enabled", True):
+            memory_consolidator.consolidate_messages(history, session_id)
+
+    try:
+        await asyncio.to_thread(work)
+    except Exception as e:
+        logger.warning(f"Background memory maintenance failed for {session_id}: {e}")
 
 class UpdateSessionTitleRequest(BaseModel):
     session_id: str
@@ -1305,6 +1338,7 @@ async def get_chat_session(session_id: str):
 @app.delete("/api/chat/session/{session_id}")
 async def delete_chat_session(session_id: str):
     try:
+        memory.delete_session_messages(session_id)
         success = history_store.delete_session(session_id)
         if success:
             return JSONResponse(status_code=200, content={"message": "Session deleted successfully"})
@@ -1334,25 +1368,22 @@ async def index_chat_session(session_id: str, request: IndexSessionRequest):
         history = session.get("history", [])
         if not history:
             return JSONResponse(status_code=400, content={"error": "Session has no history to index"})
-        
-        # Insert the history into memory using the new chunking functionality
-        response = memory.insert_history(
-            history=history,
-            session_id=session_id,
+
+        result = memory_engine.full_reindex_session(
+            history_store,
+            session_id,
+            history,
             window_size=request.window_size,
             stride=request.stride,
-            format_style=request.format_style
+            format_style=request.format_style,
         )
-        
-        if response is None:
+
+        if result.get("error"):
             return JSONResponse(status_code=500, content={"error": "Failed to index session"})
-        
-        # Mark the session as indexed
-        history_store.mark_session_indexed(session_id, True)
-        
+
         return JSONResponse(status_code=200, content={
             "message": "Session indexed successfully",
-            "chunks_created": len(history) // request.window_size + 1 if len(history) > 0 else 0
+            "indexed_messages": result.get("indexed_messages", 0),
         })
         
     except Exception as e:
@@ -1474,6 +1505,12 @@ async def reindex_all_sessions():
 class QueryContextRequest(BaseModel):
     text: str
     limit: int = 3
+    episodic_limit: Optional[int] = None
+    document_limit: Optional[int] = None
+    fact_limit: Optional[int] = None
+    skill_limit: Optional[int] = None
+    include_user_model: bool = True
+    include_skills: bool = True
 
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 
@@ -1655,11 +1692,170 @@ async def reindex_document(doc_id: str):
 @app.post("/api/memory/context")
 async def query_memory_context(request: QueryContextRequest):
     try:
-        response = memory.query_memory_context(text=request.text, limit=request.limit)
+        settings = settings_manager.settings
+        episodic_limit = request.episodic_limit
+        if episodic_limit is None:
+            episodic_limit = int(settings.get("memory.retrieval.episodicLimit", 5))
+        document_limit = request.document_limit
+        if document_limit is None:
+            document_limit = int(settings.get("memory.retrieval.documentLimit", 3))
+        fact_limit = request.fact_limit
+        if fact_limit is None:
+            fact_limit = int(settings.get("memory.retrieval.factLimit", 12))
+        skill_limit = request.skill_limit
+        if skill_limit is None:
+            skill_limit = int(settings.get("memory.retrieval.skillLimit", 3))
+        profile_limit = int(settings.get("memory.userModel.profileLimit", 8))
+
+        if not settings.get("llm.enableMemoryRetrieval", True):
+            return JSONResponse(status_code=200, content={
+                "context": [],
+                "documents": [],
+                "facts": [],
+                "skills": [],
+                "user_model": "",
+                "skills_text": "",
+                "tiers": {},
+            })
+
+        response = memory_engine.build_context(
+            request.text,
+            episodic_limit=episodic_limit,
+            document_limit=document_limit,
+            fact_limit=fact_limit,
+            skill_limit=skill_limit,
+            profile_limit=profile_limit,
+            include_user_model=request.include_user_model,
+            include_skills=request.include_skills,
+        )
         return JSONResponse(status_code=200, content=response)
     except Exception as e:
         logger.error(f"Error querying memory context: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "Failed to query memory context"})
+
+
+class ConsolidateMemoryRequest(BaseModel):
+    session_id: str = ""
+    history: List[Dict[str, str]] = []
+
+
+@app.post("/api/memory/consolidate")
+async def consolidate_memory(request: ConsolidateMemoryRequest):
+    try:
+        history = request.history
+        if not history and request.session_id:
+            session = history_store.get_session_history(request.session_id)
+            history = session.get("history", []) if session else []
+
+        result = memory_consolidator.consolidate_messages(
+            history,
+            session_id=request.session_id,
+        )
+        return JSONResponse(status_code=200, content=result)
+    except Exception as e:
+        logger.error(f"Memory consolidation failed: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to consolidate memory"})
+
+
+@app.get("/api/memory/stats")
+async def get_memory_stats():
+    try:
+        return JSONResponse(status_code=200, content=memory_engine.get_stats())
+    except Exception as e:
+        logger.error(f"Error getting memory stats: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to get memory stats"})
+
+
+@app.get("/api/memory/user-model")
+async def get_user_model():
+    try:
+        return JSONResponse(status_code=200, content={
+            "facts": user_model_store.get_all_facts(),
+            "updated_at": user_model_store._data.get("updated_at"),
+        })
+    except Exception as e:
+        logger.error(f"Error getting user model: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to get user model"})
+
+
+class UpsertFactRequest(BaseModel):
+    category: str
+    key: str
+    value: str
+    pinned: bool = False
+
+
+@app.post("/api/memory/user-model/fact")
+async def upsert_user_fact(request: UpsertFactRequest):
+    try:
+        fact = user_model_store.upsert_fact(
+            category=request.category,
+            key=request.key,
+            value=request.value,
+            pinned=request.pinned,
+        )
+        return JSONResponse(status_code=200, content={"fact": fact})
+    except Exception as e:
+        logger.error(f"Error upserting user fact: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to save fact"})
+
+
+@app.delete("/api/memory/user-model/fact/{fact_id}")
+async def delete_user_fact(fact_id: str):
+    try:
+        ok = user_model_store.delete_fact(fact_id)
+        if not ok:
+            return JSONResponse(status_code=404, content={"error": "Fact not found"})
+        return JSONResponse(status_code=200, content={"success": True})
+    except Exception as e:
+        logger.error(f"Error deleting user fact: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to delete fact"})
+
+
+@app.get("/api/memory/skills")
+async def get_skills():
+    try:
+        return JSONResponse(status_code=200, content={
+            "skills": skill_library_store.get_all_skills(),
+            "updated_at": skill_library_store._data.get("updated_at"),
+        })
+    except Exception as e:
+        logger.error(f"Error getting skills: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to get skills"})
+
+
+@app.delete("/api/memory/skills/{skill_id}")
+async def delete_skill(skill_id: str):
+    try:
+        ok = skill_library_store.delete_skill(skill_id)
+        if not ok:
+            return JSONResponse(status_code=404, content={"error": "Skill not found"})
+        return JSONResponse(status_code=200, content={"success": True})
+    except Exception as e:
+        logger.error(f"Error deleting skill: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to delete skill"})
+
+
+@app.post("/api/memory/reindex-all-sessions")
+async def reindex_all_sessions_memory():
+    """Re-index all chat sessions into episodic memory (Tier 2)."""
+    try:
+        memory.delete_all_messages()
+        sessions = history_store.get_session_list()
+        indexed = 0
+        for meta in sessions:
+            session = history_store.get_session_history(meta["id"])
+            if not session:
+                continue
+            history = session.get("history", [])
+            if not history:
+                continue
+            memory_engine.full_reindex_session(history_store, meta["id"], history)
+            indexed += 1
+        return JSONResponse(status_code=200, content={"sessions_indexed": indexed})
+    except Exception as e:
+        logger.error(f"Reindex all sessions failed: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Failed to reindex sessions"})
 
 # Add RVC proxy middleware
 app.middleware("http")(create_proxy_middleware("/api/rvc", rvc_server_port))

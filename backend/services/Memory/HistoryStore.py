@@ -41,7 +41,8 @@ class HistoryStore:
             "created_at": datetime.now().isoformat(),
             "history": [],
             "indexed": False,
-            "indexed_at": None
+            "indexed_at": None,
+            "indexed_message_count": 0,
         }
         
         session_path = self._get_session_path(session_id)
@@ -76,6 +77,26 @@ class HistoryStore:
             return True
         except (json.JSONDecodeError, IOError):
             return False
+
+    def set_indexed_message_count(self, session_id: str, count: int) -> bool:
+        session_path = self._get_session_path(session_id)
+        if not os.path.exists(session_path):
+            return False
+        try:
+            with open(session_path, 'r', encoding='utf-8') as f:
+                session_data = json.load(f)
+            session_data["indexed_message_count"] = max(0, int(count))
+            with open(session_path, 'w', encoding='utf-8') as f:
+                json.dump(session_data, f, ensure_ascii=False, indent=2)
+            return True
+        except (json.JSONDecodeError, IOError, ValueError):
+            return False
+
+    def get_indexed_message_count(self, session_id: str) -> int:
+        session = self.get_session_history(session_id)
+        if not session:
+            return 0
+        return int(session.get("indexed_message_count", 0))
 
     def update_session_title(self, session_id: str, title: str) -> bool:
         """
@@ -152,7 +173,8 @@ class HistoryStore:
                             "created_at": session_data["created_at"],
                             "indexed": session_data.get("indexed", False),
                             "indexed_at": session_data.get("indexed_at"),
-                            "history": session_data.get("history", [])
+                            "message_count": len(session_data.get("history", [])),
+                            "indexed_message_count": session_data.get("indexed_message_count", 0),
                         })
                 except (json.JSONDecodeError, IOError):
                     continue

@@ -9,7 +9,8 @@ export interface Session {
     id: string
     title: string
     created_at: string
-    history: HistoryItem[]
+    history?: HistoryItem[]
+    message_count?: number
     indexed?: boolean
     indexed_at?: string
   }

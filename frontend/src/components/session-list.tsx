@@ -41,7 +41,7 @@ export default function SessionList() {
             ...session,
             indexed: session.indexed || false,
             indexed_at: session.indexed_at,
-            messageCount: session.history?.length || 0,
+            messageCount: session.message_count ?? session.history?.length ?? 0,
             lastActivity: session.created_at // Using created_at as lastActivity for now
         }));
         setSessions(transformedData);
