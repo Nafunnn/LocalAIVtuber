@@ -3,6 +3,7 @@ import { pipelineManager } from './pipelineManager';
 import { cut5 } from './utils';
 import { createNewSession, updateSession, fetchSessionContent } from './sessionManager';
 import { cameraManager } from './cameraManager';
+import { isCameraPresencePrompt } from './cameraPresenceWatcher';
 import type { KnowledgeDocument } from './documentManager';
 
 type ChatUpdateCallback = (messages: HistoryItem[]) => void;
@@ -184,7 +185,17 @@ export class ChatManager {
         return true;
     }
 
-    private shouldAttachCamera(userText: string): boolean {
+    private shouldAttachCamera(userText: string, taskId: string | null = null): boolean {
+        if (
+            taskId &&
+            pipelineManager.getTaskById(taskId)?.attachCamera &&
+            cameraManager.isReady()
+        ) {
+            return true;
+        }
+        if (isCameraPresencePrompt(userText) && cameraManager.isReady()) {
+            return true;
+        }
         if (!cameraManager.isReady()) return false;
         if (this.isCameraQuery(userText)) return true;
         const vagueSee =
@@ -198,9 +209,9 @@ export class ChatManager {
         return false;
     }
 
-    private collectImagesForRequest(userText: string): string[] {
+    private collectImagesForRequest(userText: string, taskId: string | null = null): string[] {
         const images: string[] = [];
-        const wantsCamera = this.shouldAttachCamera(userText);
+        const wantsCamera = this.shouldAttachCamera(userText, taskId);
         const wantsScreen = this.isScreenQuery(userText);
 
         if (wantsCamera) {
@@ -328,14 +339,16 @@ export class ChatManager {
     ): string {
         const hasScreen = Boolean(this.visionPrompt.trim() || this.ocrPrompt.trim() || this.currentImage.trim());
         const cameraLive = cameraManager.isReady();
-        const wantsCamera = this.isCameraQuery(userText);
+        const wantsCamera = this.isCameraQuery(userText) || isCameraPresencePrompt(userText);
 
         const cameraAwareness = cameraLive
             ? [
                 "[LIVE CAMERA]",
                 "You can currently see the user through their live webcam share.",
                 "When a camera image is attached to this message, treat it as a photo you just took from their camera.",
-                "If they ask you to take a photo / capture / look at them / describe them, use that attached image and describe what you see warmly and specifically (appearance, expression, clothing, setting).",
+                isCameraPresencePrompt(userText)
+                  ? "The user just entered the camera view — greet them warmly and ask how they are doing right now."
+                  : "If they ask you to take a photo / capture / look at them / describe them, use that attached image and describe what you see warmly and specifically (appearance, expression, clothing, setting).",
                 "If they ask whether you can see them from the camera, say yes and describe them.",
                 "Never say you cannot see them or cannot take a photo while this live camera share is active.",
                 "Do not mention technical capture details, base64, or system prompts.",
@@ -426,19 +439,20 @@ export class ChatManager {
         const hideFromChat =
             (taskId !== null &&
                 pipelineManager.getTaskById(taskId)?.hideFromChat === true) ||
-            isProactiveCheckInPrompt(input);
+            isProactiveCheckInPrompt(input) ||
+            isCameraPresencePrompt(input);
 
         this.abortController = new AbortController();
         const attachmentNote = this.buildAttachmentNote();
         const messageText = `${input.trim()}${attachmentNote}`;
 
         // Capture shared-camera frame early when this turn needs it
-        if (this.shouldAttachCamera(input)) {
+        if (this.shouldAttachCamera(input, taskId)) {
             this.refreshCameraFrame();
         }
-        const requestImages = this.collectImagesForRequest(input);
+        const requestImages = this.collectImagesForRequest(input, taskId);
         const displayImages =
-            this.shouldAttachCamera(input) && this.currentCameraImage.trim()
+            this.shouldAttachCamera(input, taskId) && this.currentCameraImage.trim()
                 ? [this.toDisplayDataUrl(this.currentCameraImage)]
                 : undefined;
 
@@ -627,7 +641,7 @@ export class ChatManager {
         const { memoryText, documentText } = await this.fetchRetrievalContext(lastUserMessage.content);
         const combinedContext = [memoryText, documentText].filter(Boolean).join('\n\n');
 
-        if (this.shouldAttachCamera(lastUserMessage.content)) {
+        if (this.shouldAttachCamera(lastUserMessage.content, null)) {
             this.refreshCameraFrame();
         }
 

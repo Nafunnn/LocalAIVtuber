@@ -21,6 +21,8 @@ export type Task = {
   status: TaskStatus;
   /** If true, the user/input prompt is not shown in the chat UI. */
   hideFromChat?: boolean;
+  /** If true, attach a fresh webcam frame to the LLM request. */
+  attachCamera?: boolean;
   interruptionState?: {
     tts: boolean;
     llm: boolean;

@@ -15,6 +15,10 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { voiceInputManager, type VoiceInputState } from "@/lib/voiceInputManager";
 import { cameraManager, type CameraState } from "@/lib/cameraManager";
+import {
+  cameraPresenceWatcher,
+  type CameraPresenceState,
+} from "@/lib/cameraPresenceWatcher";
 import { chatManager } from "@/lib/chatManager";
 import { useSettings } from "@/context/SettingsContext";
 import { Camera } from "lucide-react";
@@ -35,12 +39,17 @@ interface MediaDeviceOption {
 const MICROPHONE_SETTING = "input.microphone.device";
 const CAMERA_SETTING = "input.camera.deviceId";
 const CAMERA_ENABLED_SETTING = "input.camera.enabled";
+const PRESENCE_WATCH_SETTING = "input.camera.presenceWatch.enabled";
+const PRESENCE_COOLDOWN_SETTING = "input.camera.presenceWatch.cooldownMinutes";
 const LANGUAGE_SETTING = "input.language";
 
 export default function VoiceStreamer() {
   const { settings, updateSetting } = useSettings();
   const [voiceState, setVoiceState] = useState<VoiceInputState>(voiceInputManager.getState());
   const [cameraState, setCameraState] = useState<CameraState>(cameraManager.getState());
+  const [presenceState, setPresenceState] = useState<CameraPresenceState>(
+    cameraPresenceWatcher.getState()
+  );
   const [transcriptions, setTranscriptions] = useState<string[]>(voiceInputManager.getTranscriptions());
   const [microphones, setMicrophones] = useState<MicrophoneDevice[]>([]);
   const [cameras, setCameras] = useState<MediaDeviceOption[]>([]);
@@ -53,6 +62,11 @@ export default function VoiceStreamer() {
       : "default";
   const selectedCamera = settings[CAMERA_SETTING] || "default";
   const cameraShareEnabled = Boolean(settings[CAMERA_ENABLED_SETTING]);
+  const presenceWatchEnabled = Boolean(settings[PRESENCE_WATCH_SETTING]);
+  const presenceCooldownMinutes =
+    typeof settings[PRESENCE_COOLDOWN_SETTING] === "number"
+      ? settings[PRESENCE_COOLDOWN_SETTING]
+      : 5;
   const selectedLanguage = settings[LANGUAGE_SETTING] || "en";
 
   useEffect(() => {
@@ -67,6 +81,10 @@ export default function VoiceStreamer() {
       setCameraState(state);
       cameraManager.attachPreview(videoRef.current);
     });
+  }, []);
+
+  useEffect(() => {
+    return cameraPresenceWatcher.subscribe(setPresenceState);
   }, []);
 
   useEffect(() => {
@@ -138,6 +156,26 @@ export default function VoiceStreamer() {
       await loadCameras();
       cameraManager.attachPreview(videoRef.current);
     }
+    if (!enabled && presenceWatchEnabled) {
+      await updateSetting(PRESENCE_WATCH_SETTING, false);
+    }
+  };
+
+  const handlePresenceWatchToggle = async (enabled: boolean) => {
+    if (enabled && !cameraShareEnabled) {
+      await updateSetting(CAMERA_ENABLED_SETTING, true);
+      const ok = await cameraManager.setEnabled(true);
+      if (ok) {
+        await loadCameras();
+        cameraManager.attachPreview(videoRef.current);
+      }
+    }
+    await updateSetting(PRESENCE_WATCH_SETTING, enabled);
+  };
+
+  const handlePresenceCooldownChange = async (value: string) => {
+    const minutes = Math.max(1, Math.min(60, Number(value) || 5));
+    await updateSetting(PRESENCE_COOLDOWN_SETTING, minutes);
   };
 
   const handleLanguageChange = async (value: string) => {
@@ -283,6 +321,59 @@ export default function VoiceStreamer() {
                 </p>
               </div>
             )}
+
+            <div className="rounded-md border bg-muted/30 px-3 py-3 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <Label htmlFor="presence-watch-toggle" className="text-sm">
+                    Watch for person entering
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    When the room is empty and someone enters the frame, the AI greets you
+                    proactively (uses object detection + scene change).
+                  </p>
+                </div>
+                <Switch
+                  id="presence-watch-toggle"
+                  checked={presenceWatchEnabled}
+                  onCheckedChange={(v) => void handlePresenceWatchToggle(v)}
+                  disabled={loadingDevices}
+                />
+              </div>
+              {presenceWatchEnabled && (
+                <div className="flex flex-wrap items-center gap-3">
+                  <Label htmlFor="presence-cooldown" className="text-xs shrink-0">
+                    Greeting cooldown (minutes)
+                  </Label>
+                  <Select
+                    value={String(presenceCooldownMinutes)}
+                    onValueChange={(v) => void handlePresenceCooldownChange(v)}
+                  >
+                    <SelectTrigger id="presence-cooldown" className="h-8 w-24">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[1, 3, 5, 10, 15, 30].map((m) => (
+                        <SelectItem key={m} value={String(m)}>
+                          {m}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-xs text-muted-foreground">
+                    {presenceState.modelReady
+                      ? presenceState.personVisible
+                        ? "Person in frame"
+                        : presenceState.scanning
+                          ? "Scanning — waiting for someone to enter"
+                          : "Model ready"
+                      : presenceState.error
+                        ? `Detection unavailable: ${presenceState.error}`
+                        : "Loading detection model… (first run downloads weights)"}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

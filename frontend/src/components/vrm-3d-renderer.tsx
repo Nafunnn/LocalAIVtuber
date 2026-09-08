@@ -71,6 +71,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
   const wasRecordingRef = useRef(false);
   const wasThinkingRef = useRef(false);
   const wasBrowserActiveRef = useRef(false);
+  const wasPersonPresentRef = useRef(false);
   const lastBrowserUserKeyRef = useRef("");
 
   const [isSpeaking, setIsSpeaking] = React.useState(false);
@@ -209,6 +210,16 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
       wasBrowserActiveRef.current = active;
     });
 
+    const unsubPerson = globalStateManager.subscribe("isPersonPresent", (present) => {
+      if (present && !wasPersonPresentRef.current) {
+        playGesture(pickGreetingGesture(), { override: true });
+        vrmFacialController.setEmotion("happy", 5000);
+      } else if (!present && wasPersonPresentRef.current) {
+        vrmFacialController.setEmotion("neutral", 500);
+      }
+      wasPersonPresentRef.current = present;
+    });
+
     const unsubPipe = pipelineManager.subscribe((tasks) => {
       const active = tasks.find(
         (t) => t.status !== "task_finished" && t.status !== "cancelled"
@@ -316,6 +327,7 @@ const VRM3dCanvas: React.FC<VRM3dCanvasProps> = ({ modelPath, isActive = true })
       window.clearInterval(browserPoll);
       unsubVoice();
       unsubBrowser();
+      unsubPerson();
       unsubPipe();
       unsubChat();
     };

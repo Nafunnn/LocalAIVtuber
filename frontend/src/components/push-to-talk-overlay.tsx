@@ -10,6 +10,7 @@ import {
   dailyReminderScheduler,
   normalizeDailyReminders,
 } from "@/lib/dailyReminderScheduler";
+import { cameraPresenceWatcher } from "@/lib/cameraPresenceWatcher";
 
 export function PushToTalkOverlay() {
   const { settings } = useSettings();
@@ -25,6 +26,15 @@ export function PushToTalkOverlay() {
       enabled: settings["frontend.dailyReminders.enabled"] !== false,
       items: normalizeDailyReminders(settings["frontend.dailyReminders.items"]),
     });
+    cameraPresenceWatcher.start({
+      enabled:
+        settings["input.camera.enabled"] === true &&
+        settings["input.camera.presenceWatch.enabled"] === true,
+      cooldownMinutes:
+        typeof settings["input.camera.presenceWatch.cooldownMinutes"] === "number"
+          ? settings["input.camera.presenceWatch.cooldownMinutes"]
+          : 5,
+    });
     pushToTalkController.bind();
     return () => {
       pushToTalkController.unbind();
@@ -37,6 +47,15 @@ export function PushToTalkOverlay() {
     dailyReminderScheduler.setItems(
       normalizeDailyReminders(settings["frontend.dailyReminders.items"])
     );
+    cameraPresenceWatcher.setEnabled(
+      settings["input.camera.enabled"] === true &&
+        settings["input.camera.presenceWatch.enabled"] === true
+    );
+    if (typeof settings["input.camera.presenceWatch.cooldownMinutes"] === "number") {
+      cameraPresenceWatcher.setCooldownMinutes(
+        settings["input.camera.presenceWatch.cooldownMinutes"]
+      );
+    }
   }, [settings]);
 
   useEffect(() => {

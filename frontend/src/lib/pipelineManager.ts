@@ -28,7 +28,10 @@ class PipelineManager {
     return this.tasks.find(t => t.id === id);
   }
 
-  addInputTask(input: string, options?: { hideFromChat?: boolean }): string {
+  addInputTask(
+    input: string,
+    options?: { hideFromChat?: boolean; attachCamera?: boolean }
+  ): string {
     const id = uuidv4();
     const task: Task = {
       id,
@@ -36,6 +39,7 @@ class PipelineManager {
       response: [],
       status: "created",
       hideFromChat: options?.hideFromChat === true,
+      attachCamera: options?.attachCamera === true,
     };
     this.tasks.push(task);
     this.notify();

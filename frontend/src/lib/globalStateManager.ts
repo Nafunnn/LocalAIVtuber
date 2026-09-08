@@ -6,6 +6,7 @@ interface GlobalState {
     isVoiceRecording: boolean;
     isAutoCapture: boolean;
     isBrowserActive: boolean;
+    isPersonPresent: boolean;
 }
 
 class GlobalStateManager {
@@ -15,6 +16,7 @@ class GlobalStateManager {
     isVoiceRecording: false,
     isAutoCapture: false,
     isBrowserActive: false,
+    isPersonPresent: false,
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
