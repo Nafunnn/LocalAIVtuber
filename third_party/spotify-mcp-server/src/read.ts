@@ -142,6 +142,38 @@ const searchSpotify: tool<{
           .filter((show): show is SpotifyShow => show !== null)
           .map(formatShow)
           .join('\n');
+      } else if (type === 'track') {
+        const searchResults = await spotifyFetch<{
+          tracks?: {
+            items: Array<{
+              id: string;
+              name: string;
+              duration_ms: number;
+              popularity?: number;
+              artists: Array<{ name: string }>;
+            } | null>;
+          };
+        }>('search', {
+          query: {
+            q: query,
+            type,
+            limit: limitValue,
+            offset: offsetValue,
+            market: 'from_token',
+          },
+        });
+        formattedResults = (searchResults.tracks?.items ?? [])
+          .filter((track): track is NonNullable<typeof track> => track !== null)
+          .map((track, i) => {
+            const artists = track.artists.map((a) => a.name).join(', ');
+            const duration = formatDuration(track.duration_ms);
+            const popularity =
+              typeof track.popularity === 'number'
+                ? `, popularity: ${track.popularity}`
+                : '';
+            return `${i + 1}. "${track.name}" by ${artists} (${duration}${popularity}) - ID: ${track.id}`;
+          })
+          .join('\n');
       } else {
         const results = await handleSpotifyRequest(async (spotifyApi) => {
           return await spotifyApi.search(
@@ -153,19 +185,7 @@ const searchSpotify: tool<{
           );
         });
 
-        if (type === 'track' && results.tracks) {
-          formattedResults = results.tracks.items
-            .map((track, i) => {
-              const artists = track.artists.map((a) => a.name).join(', ');
-              const duration = formatDuration(track.duration_ms);
-              const popularity =
-                typeof track.popularity === 'number'
-                  ? `, popularity: ${track.popularity}`
-                  : '';
-              return `${i + 1}. "${track.name}" by ${artists} (${duration}${popularity}) - ID: ${track.id}`;
-            })
-            .join('\n');
-        } else if (type === 'album' && results.albums) {
+        if (type === 'album' && results.albums) {
           formattedResults = results.albums.items
             .map((album, i) => {
               const artists = album.artists.map((a) => a.name).join(', ');

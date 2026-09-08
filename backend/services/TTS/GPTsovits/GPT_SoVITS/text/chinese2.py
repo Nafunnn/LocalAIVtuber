@@ -29,12 +29,24 @@ jieba_mod.setLogLevel(logging.CRITICAL)
 
 # is_g2pw_str = os.environ.get("is_g2pw", "True")##默认开启
 # is_g2pw = False#True if is_g2pw_str.lower() == 'true' else False
-is_g2pw = True#True if is_g2pw_str.lower() == 'true' else False
+is_g2pw = os.environ.get("is_g2pw", "True").lower() == "true"
+g2pw = None
 if is_g2pw:
-    # print("当前使用g2pw进行拼音推理")
-    from text.g2pw import G2PWPinyin, correct_pronunciation
-    parent_directory = os.path.dirname(current_file_path)
-    g2pw = G2PWPinyin(model_dir="GPT_SoVITS/text/G2PWModel",model_source=os.environ.get("bert_path","GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"),v_to_u=False, neutral_tone_with_five=True)
+    try:
+        from text.g2pw import G2PWPinyin, correct_pronunciation
+        g2pw_model_dir = os.path.join(current_file_path, "G2PWModel")
+        g2pw = G2PWPinyin(
+            model_dir=g2pw_model_dir,
+            model_source=os.environ.get(
+                "bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
+            ),
+            v_to_u=False,
+            neutral_tone_with_five=True,
+        )
+    except Exception as g2pw_err:
+        logging.warning("g2pw unavailable, falling back to pypinyin: %s", g2pw_err)
+        is_g2pw = False
+        g2pw = None
 
 rep_map = {
     "：": ",",

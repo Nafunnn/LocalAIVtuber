@@ -1,4 +1,6 @@
+import base64
 import os
+import re
 from typing import Generator, List, Dict
 
 from ollama import Client
@@ -6,6 +8,77 @@ from ollama import ResponseError
 
 from services.lib.LAV_logger import logger
 from .BaseLLM import BaseLLM
+
+
+def _normalize_image_value(image) -> str | None:
+    """Convert data URLs / dict payloads into raw base64 for Ollama Cloud."""
+    if image is None:
+        return None
+    if isinstance(image, dict):
+        for key in ("data", "base64", "image", "content"):
+            if image.get(key):
+                return _normalize_image_value(image[key])
+        return None
+
+    value = str(image).strip()
+    if not value:
+        return None
+    if value.startswith("data:"):
+        parts = value.split(",", 1)
+        value = parts[1] if len(parts) > 1 else ""
+    value = re.sub(r"\s+", "", value.strip())
+    if not value:
+        return None
+    try:
+        base64.b64decode(value, validate=True)
+    except Exception:
+        return None
+    return value
+
+
+def _normalize_message(message: Dict) -> Dict:
+    copy = dict(message)
+    raw_images = copy.get("images")
+    if not raw_images:
+        copy.pop("images", None)
+        return copy
+
+    cleaned: List[str] = []
+    for image in raw_images:
+        normalized = _normalize_image_value(image)
+        if normalized:
+            cleaned.append(normalized)
+    if cleaned:
+        copy["images"] = cleaned
+    else:
+        copy.pop("images", None)
+    return copy
+
+
+def _normalize_messages(messages: List[Dict]) -> List[Dict]:
+    normalized: List[Dict] = []
+    for message in messages:
+        if isinstance(message, dict):
+            normalized.append(_normalize_message(message))
+        else:
+            normalized.append(message)
+    return normalized
+
+
+def _strip_images_from_messages(messages: List[Dict]) -> List[Dict]:
+    stripped: List[Dict] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            stripped.append(message)
+            continue
+        copy = dict(message)
+        copy.pop("images", None)
+        stripped.append(copy)
+    return stripped
+
+
+def _messages_have_images(messages: List[Dict]) -> bool:
+    return any(isinstance(m, dict) and m.get("images") for m in messages)
 
 
 class OllamaCloudLLM(BaseLLM):
@@ -57,18 +130,18 @@ class OllamaCloudLLM(BaseLLM):
             messages.append({"role": "system", "content": system_prompt})
         if history:
             for entry in history:
-                messages.append(entry)
+                if isinstance(entry, dict):
+                    messages.append(_normalize_message(entry))
+                else:
+                    messages.append(entry)
 
         user_message: Dict = {"role": "user", "content": text}
         if images:
             cleaned = []
             for image in images:
-                if not image:
-                    continue
-                value = str(image)
-                if "," in value and value.startswith("data:"):
-                    value = value.split(",", 1)[1]
-                cleaned.append(value)
+                normalized = _normalize_image_value(image)
+                if normalized:
+                    cleaned.append(normalized)
             if cleaned:
                 user_message["images"] = cleaned
         messages.append(user_message)
@@ -99,21 +172,12 @@ class OllamaCloudLLM(BaseLLM):
             if status == 404:
                 raise ValueError(f"Model '{self.model}' not found on Ollama Cloud") from e
             # Vision-capable request on a text-only model: retry without images once.
-            has_images = any(isinstance(m, dict) and m.get("images") for m in messages)
-            if allow_image_fallback and has_images:
+            if allow_image_fallback and _messages_have_images(messages):
                 logger.warning(
                     f"Ollama Cloud rejected multimodal request ({e}); retrying without images"
                 )
-                stripped = []
-                for message in messages:
-                    if not isinstance(message, dict):
-                        stripped.append(message)
-                        continue
-                    copy = dict(message)
-                    copy.pop("images", None)
-                    stripped.append(copy)
                 yield from self._stream_chat(
-                    stripped,
+                    _strip_images_from_messages(messages),
                     options,
                     allow_image_fallback=False,
                 )
@@ -122,21 +186,12 @@ class OllamaCloudLLM(BaseLLM):
         except ValueError:
             raise
         except Exception as e:
-            has_images = any(isinstance(m, dict) and m.get("images") for m in messages)
-            if allow_image_fallback and has_images:
+            if allow_image_fallback and _messages_have_images(messages):
                 logger.warning(
                     f"Ollama Cloud multimodal failed ({e}); retrying without images"
                 )
-                stripped = []
-                for message in messages:
-                    if not isinstance(message, dict):
-                        stripped.append(message)
-                        continue
-                    copy = dict(message)
-                    copy.pop("images", None)
-                    stripped.append(copy)
                 yield from self._stream_chat(
-                    stripped,
+                    _strip_images_from_messages(messages),
                     options,
                     allow_image_fallback=False,
                 )
@@ -148,13 +203,16 @@ class OllamaCloudLLM(BaseLLM):
         messages: List[Dict],
         tools: list,
         options: dict | None = None,
+        *,
+        allow_image_fallback: bool = True,
     ):
         """Non-streaming chat that can return tool_calls (for agent loops)."""
         client = self._get_client()
+        normalized = _normalize_messages(messages)
         try:
             response = client.chat(
                 model=self.model,
-                messages=messages,
+                messages=normalized,
                 tools=tools,
                 stream=False,
                 options=options or {},
@@ -166,10 +224,32 @@ class OllamaCloudLLM(BaseLLM):
                 raise ValueError("Invalid or missing Ollama API key") from e
             if status == 404:
                 raise ValueError(f"Model '{self.model}' not found on Ollama Cloud") from e
+            if allow_image_fallback and _messages_have_images(normalized):
+                logger.warning(
+                    f"Ollama Cloud rejected tool request with images ({e}); "
+                    "retrying without images"
+                )
+                return self.chat_with_tools(
+                    _strip_images_from_messages(normalized),
+                    tools,
+                    options,
+                    allow_image_fallback=False,
+                )
             raise ValueError(f"Ollama Cloud error: {e}") from e
         except ValueError:
             raise
         except Exception as e:
+            if allow_image_fallback and _messages_have_images(normalized):
+                logger.warning(
+                    f"Ollama Cloud tool request with images failed ({e}); "
+                    "retrying without images"
+                )
+                return self.chat_with_tools(
+                    _strip_images_from_messages(normalized),
+                    tools,
+                    options,
+                    allow_image_fallback=False,
+                )
             raise ValueError(f"Failed to connect to Ollama Cloud: {e}") from e
 
     def get_chat_completion(

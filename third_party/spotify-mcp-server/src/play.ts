@@ -8,7 +8,11 @@ import { handleSpotifyRequest, spotifyFetch } from './utils.js';
  * device and waits briefly for it to become ready.
  * Returns the device_id to use, or empty string if none found.
  */
-async function ensureActiveDevice(preferredDeviceId?: string): Promise<string> {
+async function ensureActiveDevice(
+  preferredDeviceId?: string,
+  options?: { activatePlayback?: boolean },
+): Promise<string> {
+  const activatePlayback = options?.activatePlayback ?? false;
   const data = await spotifyFetch<{
     devices: Array<{ id: string; is_active: boolean; name: string }>;
   }>('me/player/devices');
@@ -27,7 +31,7 @@ async function ensureActiveDevice(preferredDeviceId?: string): Promise<string> {
       if (!preferred.is_active) {
         await spotifyFetch('me/player', {
           method: 'PUT',
-          body: { device_ids: [preferredDeviceId], play: false },
+          body: { device_ids: [preferredDeviceId], play: activatePlayback },
         });
         await new Promise((r) => setTimeout(r, 500));
       }
@@ -43,11 +47,70 @@ async function ensureActiveDevice(preferredDeviceId?: string): Promise<string> {
   const target = devices[0];
   await spotifyFetch('me/player', {
     method: 'PUT',
-    body: { device_ids: [target.id], play: false },
+    body: { device_ids: [target.id], play: activatePlayback },
   });
   // Give Spotify a moment to register the transfer before we start playback
   await new Promise((r) => setTimeout(r, 600));
   return target.id;
+}
+
+async function verifyIsPlaying(activeDeviceId: string): Promise<boolean> {
+  try {
+    const state = await spotifyFetch<{ is_playing?: boolean }>('me/player', {
+      query: { device_id: activeDeviceId },
+    });
+    return Boolean(state?.is_playing);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('404') || msg.includes('204')) {
+      return false;
+    }
+    throw err;
+  }
+}
+
+async function startPlaybackOnDevice(activeDeviceId: string): Promise<void> {
+  await spotifyFetch('me/player/play', {
+    method: 'PUT',
+    query: { device_id: activeDeviceId },
+  });
+  await new Promise((r) => setTimeout(r, 500));
+  if (!(await verifyIsPlaying(activeDeviceId))) {
+    throw new Error(
+      'Spotify did not start playing. Open the Spotify app on your device and try again.',
+    );
+  }
+}
+
+async function startPlaybackUri(
+  activeDeviceId: string,
+  spotifyUri: string,
+  resolvedType: string | undefined,
+  offset?: number,
+): Promise<void> {
+  if (resolvedType === 'track') {
+    await spotifyFetch('me/player/play', {
+      method: 'PUT',
+      query: { device_id: activeDeviceId },
+      body: { uris: [spotifyUri] },
+    });
+  } else {
+    const body: Record<string, unknown> = { context_uri: spotifyUri };
+    if (offset !== undefined) {
+      body.offset = { position: offset };
+    }
+    await spotifyFetch('me/player/play', {
+      method: 'PUT',
+      query: { device_id: activeDeviceId },
+      body,
+    });
+  }
+  await new Promise((r) => setTimeout(r, 500));
+  if (!(await verifyIsPlaying(activeDeviceId))) {
+    throw new Error(
+      'Spotify did not start playing the requested content. Open the Spotify app and try again.',
+    );
+  }
 }
 
 const playMusic: tool<{
@@ -101,15 +164,31 @@ const playMusic: tool<{
     const { type, id, offset } = args;
 
     if (!(resolvedUri || (type && id))) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: 'Error: Must provide a "uri" (e.g. spotify:track:xxx) or both "type" and "id"',
-            isError: true,
-          },
-        ],
-      };
+      try {
+        const activeDeviceId = await ensureActiveDevice(deviceId, {
+          activatePlayback: true,
+        });
+        await startPlaybackOnDevice(activeDeviceId);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Playback resumed on device ${activeDeviceId}`,
+            },
+          ],
+        };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Error resuming playback: ${msg}`,
+              isError: true,
+            },
+          ],
+        };
+      }
     }
 
     let spotifyUri = resolvedUri;
@@ -121,31 +200,16 @@ const playMusic: tool<{
     const resolvedType = type ?? spotifyUri?.split(':')?.[1];
 
     try {
-      const activeDeviceId = await ensureActiveDevice(deviceId);
-
-      await handleSpotifyRequest(async (spotifyApi) => {
-        if (!spotifyUri) {
-          await spotifyApi.player.startResumePlayback(activeDeviceId);
-          return;
-        }
-        if (resolvedType === 'track') {
-          await spotifyApi.player.startResumePlayback(
-            activeDeviceId,
-            undefined,
-            [spotifyUri],
-            undefined,
-            offset,
-          );
-        } else {
-          // album, playlist, artist — use context_uri + optional offset
-          await spotifyApi.player.startResumePlayback(
-            activeDeviceId,
-            spotifyUri,
-            undefined,
-            offset !== undefined ? { position: offset } : undefined,
-          );
-        }
+      const activeDeviceId = await ensureActiveDevice(deviceId, {
+        activatePlayback: true,
       });
+
+      await startPlaybackUri(
+        activeDeviceId,
+        spotifyUri!,
+        resolvedType,
+        offset,
+      );
 
       return {
         content: [{ type: 'text', text: `Now playing: ${spotifyUri}` }],
@@ -163,6 +227,7 @@ const playMusic: tool<{
 
 const pausePlayback: tool<{
   deviceId: z.ZodOptional<z.ZodString>;
+  device_id: z.ZodOptional<z.ZodString>;
 }> = {
   name: 'pausePlayback',
   description: 'Pause Spotify playback on the active device',
@@ -171,27 +236,70 @@ const pausePlayback: tool<{
       .string()
       .optional()
       .describe('The Spotify device ID to pause playback on'),
+    device_id: z.string().optional().describe('Alias for deviceId'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { deviceId } = args;
+    const deviceId = args.deviceId ?? args.device_id;
 
-    await handleSpotifyRequest(async (spotifyApi) => {
-      await spotifyApi.player.pausePlayback(deviceId || '');
-    });
+    try {
+      const activeDeviceId = await ensureActiveDevice(deviceId);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: 'Playback paused',
-        },
-      ],
-    };
+      await spotifyFetch('me/player/pause', {
+        method: 'PUT',
+        query: { device_id: activeDeviceId },
+      });
+
+      await new Promise((r) => setTimeout(r, 400));
+
+      try {
+        const state = await spotifyFetch<{ is_playing?: boolean }>('me/player', {
+          query: { device_id: activeDeviceId },
+        });
+        if (state?.is_playing) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Error: Spotify is still playing after pause command',
+                isError: true,
+              },
+            ],
+          };
+        }
+      } catch (verifyErr) {
+        const msg =
+          verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
+        if (!msg.includes('404') && !msg.includes('204')) {
+          throw verifyErr;
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Playback paused on device ${activeDeviceId}`,
+          },
+        ],
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Error pausing playback: ${msg}`,
+            isError: true,
+          },
+        ],
+      };
+    }
   },
 };
 
 const skipToNext: tool<{
   deviceId: z.ZodOptional<z.ZodString>;
+  device_id: z.ZodOptional<z.ZodString>;
 }> = {
   name: 'skipToNext',
   description: 'Skip to the next track in the current Spotify playback queue',
@@ -200,27 +308,47 @@ const skipToNext: tool<{
       .string()
       .optional()
       .describe('The Spotify device ID to skip on'),
+    device_id: z.string().optional().describe('Alias for deviceId'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { deviceId } = args;
+    const deviceId = args.deviceId ?? args.device_id;
 
-    await handleSpotifyRequest(async (spotifyApi) => {
-      await spotifyApi.player.skipToNext(deviceId || '');
-    });
+    try {
+      const activeDeviceId = await ensureActiveDevice(deviceId);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: 'Skipped to next track',
-        },
-      ],
-    };
+      await spotifyFetch('me/player/next', {
+        method: 'POST',
+        query: { device_id: activeDeviceId },
+      });
+
+      await new Promise((r) => setTimeout(r, 400));
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Skipped to next track on device ${activeDeviceId}`,
+          },
+        ],
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Error skipping to next track: ${msg}`,
+            isError: true,
+          },
+        ],
+      };
+    }
   },
 };
 
 const skipToPrevious: tool<{
   deviceId: z.ZodOptional<z.ZodString>;
+  device_id: z.ZodOptional<z.ZodString>;
 }> = {
   name: 'skipToPrevious',
   description:
@@ -230,22 +358,41 @@ const skipToPrevious: tool<{
       .string()
       .optional()
       .describe('The Spotify device ID to skip on'),
+    device_id: z.string().optional().describe('Alias for deviceId'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { deviceId } = args;
+    const deviceId = args.deviceId ?? args.device_id;
 
-    await handleSpotifyRequest(async (spotifyApi) => {
-      await spotifyApi.player.skipToPrevious(deviceId || '');
-    });
+    try {
+      const activeDeviceId = await ensureActiveDevice(deviceId);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: 'Skipped to previous track',
-        },
-      ],
-    };
+      await spotifyFetch('me/player/previous', {
+        method: 'POST',
+        query: { device_id: activeDeviceId },
+      });
+
+      await new Promise((r) => setTimeout(r, 400));
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Skipped to previous track on device ${activeDeviceId}`,
+          },
+        ],
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Error skipping to previous track: ${msg}`,
+            isError: true,
+          },
+        ],
+      };
+    }
   },
 };
 
@@ -393,11 +540,18 @@ const resumePlayback: tool<{
     const { deviceId } = args;
 
     try {
-      const activeDeviceId = await ensureActiveDevice(deviceId);
-      await handleSpotifyRequest(async (spotifyApi) => {
-        await spotifyApi.player.startResumePlayback(activeDeviceId);
+      const activeDeviceId = await ensureActiveDevice(deviceId, {
+        activatePlayback: true,
       });
-      return { content: [{ type: 'text', text: 'Playback resumed' }] };
+      await startPlaybackOnDevice(activeDeviceId);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Playback resumed on device ${activeDeviceId}`,
+          },
+        ],
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return {

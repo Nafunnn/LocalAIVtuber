@@ -52,27 +52,59 @@ def predict(session, onnx_input: Dict[str, Any],
 
 
 def download_and_decompress(model_dir: str='G2PWModel/'):
-    if not os.path.exists(model_dir):
-        parent_directory = os.path.dirname(model_dir)
-        zip_dir = os.path.join(parent_directory,"G2PWModel_1.1.zip")
-        extract_dir = os.path.join(parent_directory,"G2PWModel_1.1")
-        extract_dir_new = os.path.join(parent_directory,"G2PWModel")
-        print("Downloading g2pw model...")
-        modelscope_url = "https://paddlespeech.cdn.bcebos.com/Parakeet/released_models/g2p/G2PWModel_1.1.zip"
-        with requests.get(modelscope_url, stream=True) as r:
-            r.raise_for_status()
-            with open(zip_dir, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+    if os.path.isdir(model_dir) and os.path.isfile(os.path.join(model_dir, 'g2pW.onnx')):
+        return model_dir
 
-        print("Extracting g2pw model...")
-        with zipfile.ZipFile(zip_dir, "r") as zip_ref:
-            zip_ref.extractall(parent_directory)
-        
-        os.rename(extract_dir, extract_dir_new)
+    parent_directory = os.path.dirname(os.path.abspath(model_dir))
+    os.makedirs(parent_directory, exist_ok=True)
+    zip_dir = os.path.join(parent_directory, "G2PWModel_1.1.zip")
+    extract_dir = os.path.join(parent_directory, "G2PWModel_1.1")
+    extract_dir_new = os.path.join(parent_directory, "G2PWModel")
 
-    return model_dir
+    if os.path.isdir(extract_dir_new) and os.path.isfile(os.path.join(extract_dir_new, 'g2pW.onnx')):
+        return extract_dir_new
+
+    mirror_urls = [
+        "https://huggingface.co/L-jasmine/GPT_Sovits/resolve/main/G2PWModel_1.1.zip",
+        "https://paddlespeech.cdn.bcebos.com/Parakeet/released_models/g2p/G2PWModel_1.1.zip",
+        "https://paddlespeech.bj.bcebos.com/Parakeet/released_models/g2p/G2PWModel_1.1.zip",
+    ]
+
+    last_error = None
+    for model_url in mirror_urls:
+        try:
+            print(f"Downloading g2pw model from {model_url}...")
+            with requests.get(model_url, stream=True, timeout=120) as r:
+                r.raise_for_status()
+                with open(zip_dir, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+
+            print("Extracting g2pw model...")
+            with zipfile.ZipFile(zip_dir, "r") as zip_ref:
+                zip_ref.extractall(parent_directory)
+
+            if os.path.isdir(extract_dir) and not os.path.isdir(extract_dir_new):
+                os.rename(extract_dir, extract_dir_new)
+
+            if os.path.isfile(os.path.join(extract_dir_new, 'g2pW.onnx')):
+                return extract_dir_new
+        except Exception as err:
+            last_error = err
+            print(f"g2pw download failed from {model_url}: {err}")
+            if os.path.isfile(zip_dir):
+                try:
+                    os.remove(zip_dir)
+                except OSError:
+                    pass
+
+    raise RuntimeError(
+        f"Failed to download G2PW model from all mirrors. Last error: {last_error}. "
+        "Manually download G2PWModel_1.1.zip from "
+        "https://huggingface.co/L-jasmine/GPT_Sovits/resolve/main/G2PWModel_1.1.zip "
+        "and extract to GPT_SoVITS/text/G2PWModel"
+    )
 
 class G2PWOnnxConverter:
     def __init__(self,

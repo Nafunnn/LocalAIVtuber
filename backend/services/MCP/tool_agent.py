@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Generator, List, Optional
 
 from services.lib.LAV_logger import logger
@@ -16,17 +17,283 @@ _MUSIC_INTENT_KEYWORDS = (
     "play ",
     "play\t",
     "pause",
+    "jeda",
+    "hentikan",
+    "matikan",
+    "stop music",
+    "stop spotify",
     "skip",
     "playlist",
     "volume",
     "song",
     "music",
+    "lagu",
     "track",
     "queue",
     "what's playing",
     "what is playing",
     "now playing",
+    "sedang diputar",
 )
+
+_PLAYBACK_TOOL_ALIASES = {
+    "pause": "pausePlayback",
+    "stop": "pausePlayback",
+    "stopPlayback": "pausePlayback",
+    "resume": "resumePlayback",
+    "unpause": "resumePlayback",
+    "play": "playMusic",
+    "skip": "skipToNext",
+    "next": "skipToNext",
+    "previous": "skipToPrevious",
+    "prev": "skipToPrevious",
+}
+
+_GENERIC_PLAY_PHRASES = (
+    "play spotify",
+    "play music",
+    "play the music",
+    "start spotify",
+    "start music",
+    "putar spotify",
+    "putar musik",
+    "try again to play",
+    "coba lagi play",
+    "coba putar lagi",
+    "play again",
+)
+
+_SUCCESS_CLAIM_MARKERS = (
+    "paused",
+    "pause",
+    "stopped",
+    "berhenti",
+    "sudah pause",
+    "sudah di-pause",
+    "sudah dijeda",
+    "playing now",
+    "now playing",
+    "sedang diputar",
+    "skipped",
+    "started your spotify",
+    "started spotify",
+    "music going",
+    "music playing",
+    "get your music playing",
+    "let the music",
+    "coming right up",
+    "started playing",
+    "sudah play",
+    "sudah diputar",
+    "mulai putar",
+)
+
+_TRACK_QUERY_RE = re.compile(
+    r"(?is)^(?:please\s+|tolong\s+)?(?:(?:can|could)\s+you\s+)?"
+    r"(?:play|putar|mainkan)\s+(?:the\s+)?(?:song\s+|lagu\s+|track\s+)?"
+    r"(.+?)(?:\s+(?:on|di)\s+spotify)?\.?\s*$"
+)
+
+_GENERIC_TITLES = frozenset(
+    {
+        "spotify",
+        "music",
+        "musik",
+        "the music",
+        "again",
+        "lagu",
+        "song",
+        "track",
+        "a song",
+        "some music",
+    }
+)
+
+
+def _extract_track_query(text: str) -> str | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if _is_generic_play_request(raw) or _is_pause_request(raw):
+        return None
+    if _is_skip_next_request(raw) or _is_skip_previous_request(raw):
+        return None
+    match = _TRACK_QUERY_RE.match(raw)
+    if not match:
+        return None
+    title = match.group(1).strip().strip("\"'")
+    if not title or title.lower() in _GENERIC_TITLES or len(title) < 2:
+        return None
+    return title
+
+
+def _parse_first_track_id(search_result: str) -> str | None:
+    found = re.search(r"- ID: (\w+)\s*$", search_result or "", re.MULTILINE)
+    return found.group(1) if found else None
+
+
+def _append_tool_exchange(
+    messages: list,
+    tools_called: set[str],
+    tool_name: str,
+    tool_args: dict,
+    result_text: str,
+) -> None:
+    tools_called.add(tool_name)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": tool_args,
+                    },
+                }
+            ],
+        }
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "tool_name": tool_name,
+            "content": result_text,
+        }
+    )
+
+
+def _auto_play_track(
+    registry: MCPRegistry,
+    messages: list,
+    tools_called: set[str],
+    query: str,
+) -> None:
+    search_args = {"query": query, "type": "track", "limit": 1}
+    search_result = registry.call_tool("searchSpotify", search_args)
+    _append_tool_exchange(
+        messages, tools_called, "searchSpotify", search_args, search_result
+    )
+    logger.info(
+        "Auto searchSpotify for track request: "
+        f"{search_result.replace(chr(10), ' ')[:240]}"
+    )
+
+    track_id = _parse_first_track_id(search_result)
+    if not track_id:
+        logger.warning(f"No track found for query: {query}")
+        return
+
+    play_args = {"uri": f"spotify:track:{track_id}"}
+    play_result = registry.call_tool("playMusic", play_args)
+    _append_tool_exchange(messages, tools_called, "playMusic", play_args, play_result)
+    logger.info(
+        "Auto playMusic for track request: "
+        f"{play_result.replace(chr(10), ' ')[:240]}"
+    )
+
+
+def _is_generic_play_request(text: str) -> bool:
+    lowered = (text or "").lower().strip()
+    if any(p in lowered for p in _GENERIC_PLAY_PHRASES):
+        return True
+    if "spotify" in lowered and "play" in lowered:
+        if any(k in lowered for k in ("pause", "stop", "jeda", "skip", "search", "find", "what")):
+            return False
+        if "play spotify" in lowered or "play music" in lowered:
+            return True
+    return False
+
+
+def _is_pause_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    if "unpause" in lowered:
+        return False
+    return any(
+        k in lowered
+        for k in (
+            "pause",
+            "jeda",
+            "hentikan",
+            "matikan",
+            "stop music",
+            "stop spotify",
+            "stop the music",
+            "stop the song",
+        )
+    )
+
+
+def _is_skip_next_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        k in lowered
+        for k in (
+            "skip",
+            "next track",
+            "next song",
+            "lagu berikutnya",
+            "lagu selanjutnya",
+            "skip lagu",
+            "lewati",
+            "lewati lagu",
+        )
+    )
+
+
+def _is_skip_previous_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        k in lowered
+        for k in ("previous", "last track", "lagu sebelumnya", "prev song")
+    )
+
+
+def _playback_auto_tool(text: str) -> tuple[str, dict] | None:
+    if _is_generic_play_request(text):
+        return ("resumePlayback", {})
+    if _is_pause_request(text):
+        return ("pausePlayback", {})
+    if _is_skip_previous_request(text):
+        return ("skipToPrevious", {})
+    if _is_skip_next_request(text):
+        return ("skipToNext", {})
+    return None
+
+
+def _required_spotify_tools(text: str) -> set[str]:
+    track_query = _extract_track_query(text)
+    if track_query:
+        return {"searchSpotify", "playMusic"}
+    if _is_pause_request(text):
+        return {"pausePlayback"}
+    if any(
+        k in (text or "").lower()
+        for k in ("resume", "lanjutkan", "unpause", "continue music", "putar lagi")
+    ):
+        return {"resumePlayback", "playMusic"}
+    if _is_generic_play_request(text):
+        return {"resumePlayback", "playMusic"}
+    if _is_skip_previous_request(text):
+        return {"skipToPrevious"}
+    if _is_skip_next_request(text):
+        return {"skipToNext"}
+    return set()
+
+
+def _claims_playback_success_without_tools(
+    content: str, tools_called: set[str], user_text: str
+) -> bool:
+    track_query = _extract_track_query(user_text)
+    if track_query and "playMusic" not in tools_called:
+        lowered = (content or "").lower()
+        return any(marker in lowered for marker in _SUCCESS_CLAIM_MARKERS)
+    required = _required_spotify_tools(user_text)
+    if not required or required.intersection(tools_called):
+        return False
+    lowered = (content or "").lower()
+    return any(marker in lowered for marker in _SUCCESS_CLAIM_MARKERS)
 
 _BROWSER_INTENT_KEYWORDS = (
     "google",
@@ -126,17 +393,36 @@ def _tool_call_parts(call: Any) -> tuple[str, Dict[str, Any]]:
     return name, arguments
 
 
-def _build_nudge(text: str, registry: MCPRegistry) -> str | None:
+def _build_nudge(text: str, registry: MCPRegistry, tools_called: set[str] | None = None) -> str | None:
     music = _looks_like_music_request(text)
     browser = _looks_like_browser_request(text)
     from .spotify_client import spotify_mcp
     from .browser_client import browser_mcp
+    tools_called = tools_called or set()
+
+    required = _required_spotify_tools(text)
+    if required and spotify_mcp.enabled:
+        missing = required - tools_called
+        if missing:
+            track_query = _extract_track_query(text)
+            if track_query and "playMusic" not in tools_called:
+                return (
+                    f"You must search and play '{track_query}' on Spotify: "
+                    f"call searchSpotify(query=\"{track_query}\", type=\"track\") "
+                    "then playMusic with the track uri. "
+                    "Do not claim success without successful tool results."
+                )
+            tool_name = next(iter(missing))
+            return (
+                f"You must call Spotify tool `{tool_name}` for this request before answering. "
+                "Do not claim success without a successful tool result."
+            )
 
     if music and spotify_mcp.enabled and not browser:
         return (
             "You must use Spotify tools for this request. "
-            "Call searchSpotify and/or playMusic (or the right playback tool) now. "
-            "Do not pretend music is playing."
+            "Call pausePlayback, resumePlayback, searchSpotify/playMusic, or the right playback tool now. "
+            "Do not pretend music changed."
         )
     if browser and browser_mcp.enabled and not music:
         return (
@@ -201,6 +487,32 @@ class MCPToolAgent:
         )
         options = self.ollama_llm._build_options(**sampling_params)
         tool_intent = _looks_like_music_request(text) or _looks_like_browser_request(text)
+        tools_called: set[str] = set()
+
+        track_query = _extract_track_query(text)
+        from .spotify_client import spotify_mcp
+
+        if track_query and spotify_mcp.enabled:
+            try:
+                _auto_play_track(self.registry, messages, tools_called, track_query)
+            except Exception as e:
+                logger.warning(f"Auto play track failed: {e}")
+        else:
+            auto_tool = _playback_auto_tool(text)
+            if auto_tool and spotify_mcp.enabled:
+                tool_name, tool_args = auto_tool
+                try:
+                    result_text = self.registry.call_tool(tool_name, tool_args)
+                    _append_tool_exchange(
+                        messages, tools_called, tool_name, tool_args, result_text
+                    )
+                    logger.info(
+                        f"Auto {tool_name} for playback request: "
+                        f"{result_text.replace(chr(10), ' ')[:240]}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Auto {tool_name} failed: {e}")
+
         if _looks_like_browser_request(text):
             from .browser_client import browser_mcp
 
@@ -209,7 +521,7 @@ class MCPToolAgent:
         logger.info(f"MCP tool agent starting with {len(ollama_tools)} tools")
 
         final_content = ""
-        nudged_for_tools = False
+        nudged_for_tools = 0
         for round_idx in range(MAX_TOOL_ROUNDS):
             logger.info(
                 f"MCP tool agent round {round_idx + 1}/{MAX_TOOL_ROUNDS} "
@@ -237,12 +549,27 @@ class MCPToolAgent:
 
             if not tool_calls:
                 final_content = msg_dict.get("content") or ""
-                nudge = _build_nudge(text, self.registry) if tool_intent else None
-                if nudge and not nudged_for_tools and round_idx == 0:
-                    nudged_for_tools = True
-                    logger.warning("Tool intent detected but model returned no tool_calls; nudging once")
+                nudge = _build_nudge(text, self.registry, tools_called) if tool_intent else None
+                hallucinated = _claims_playback_success_without_tools(
+                    final_content, tools_called, text
+                )
+                if (nudge or hallucinated) and nudged_for_tools < 3:
+                    nudged_for_tools += 1
+                    logger.warning(
+                        "Tool intent detected but model returned no tool_calls; nudging "
+                        f"({nudged_for_tools}/3)"
+                    )
                     messages.append(msg_dict)
-                    messages.append({"role": "user", "content": nudge})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": nudge
+                            or (
+                                "You claimed Spotify changed but no playback tool ran. "
+                                "Call the correct Spotify tool now, then answer briefly."
+                            ),
+                        }
+                    )
                     final_content = ""
                     continue
                 messages.append(msg_dict)
@@ -252,6 +579,7 @@ class MCPToolAgent:
 
             for call in tool_calls:
                 name, arguments = _tool_call_parts(call)
+                name = _PLAYBACK_TOOL_ALIASES.get(name, name)
                 arguments = normalize_tool_arguments(name, arguments)
                 if not name:
                     result_text = "Error: missing tool name"
@@ -259,6 +587,7 @@ class MCPToolAgent:
                     logger.info(f"Calling MCP tool: {name}({arguments})")
                     try:
                         result_text = self.registry.call_tool(name, arguments)
+                        tools_called.add(name)
                     except Exception as e:
                         result_text = f"Error calling {name}: {e}"
                     preview = result_text.replace("\n", " ")[:240]

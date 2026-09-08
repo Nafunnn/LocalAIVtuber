@@ -1267,17 +1267,23 @@ async def create_chat_session(request: CreateSessionRequest):
         logger.error(f"Error creating chat session: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "Failed to create chat session"})
 
+class ChatHistoryItem(BaseModel):
+    role: str
+    content: str
+    images: Optional[List[str]] = None
+
 class UpdateSessionRequest(BaseModel):
     session_id: str
-    history: List[Dict[str, str]]
+    history: List[ChatHistoryItem]
 
 @app.post("/api/chat/session/update")
 async def update_chat_session(request: UpdateSessionRequest):
     try:
-        success = history_store.update_session(request.session_id, request.history)
+        history = [item.model_dump(exclude_none=True) for item in request.history]
+        success = history_store.update_session(request.session_id, history)
         if success:
             asyncio.create_task(
-                _background_memory_maintenance(request.session_id, request.history)
+                _background_memory_maintenance(request.session_id, history)
             )
             return JSONResponse(status_code=200, content={"message": "Session updated successfully"})
         return JSONResponse(status_code=404, content={"error": "Session not found"})

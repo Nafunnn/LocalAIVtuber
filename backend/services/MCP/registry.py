@@ -75,6 +75,18 @@ class MCPRegistry:
         return merged
 
     def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> str:
+        aliases = {
+            "pause": "pausePlayback",
+            "stop": "pausePlayback",
+            "stopPlayback": "pausePlayback",
+            "resume": "resumePlayback",
+            "unpause": "resumePlayback",
+            "skip": "skipToNext",
+            "next": "skipToNext",
+            "previous": "skipToPrevious",
+            "prev": "skipToPrevious",
+        }
+        name = aliases.get(name, name)
         owner = self._tool_owner.get(name)
         if owner is None:
             # Rebuild map if stale (e.g. first call after partial init)
